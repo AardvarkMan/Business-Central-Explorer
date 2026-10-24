@@ -118,6 +118,11 @@ export function createExplorerHtml(
     .definition { border-top: 1px solid var(--line); padding: 13px 0; }
     .definition:first-of-type { border-top: 0; }
     .definition-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+    .table-definition-head { display: grid; grid-template-columns: minmax(0, 1fr) 112px 112px; gap: 12px; align-items: start; }
+    .definition-action-column { display: grid; justify-items: stretch; gap: 4px; }
+    .definition-action-column .open-button { width: 100%; }
+    .definition-action-label { color: var(--vscode-descriptionForeground); font-size: 10px; }
+    .relation-field-label { font-size: 9px; }
     .definition-title { font-weight: 650; }
     .definition-meta { color: var(--vscode-descriptionForeground); font-size: 11px; }
     .property-list { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 8px; }
@@ -210,6 +215,7 @@ export function createExplorerHtml(
     let selectedObjectKey;
     let detailsReturnView = "galaxy";
     let whereUsedReturnView = "tables";
+    const viewHistory = [];
     const main = document.getElementById("main");
     const loading = document.getElementById("loading");
     const loadingMessage = document.getElementById("loading-message");
@@ -237,6 +243,7 @@ export function createExplorerHtml(
       return button;
     }
     function goTo(view) {
+      viewHistory.length = 0;
       if (view === "whereUsed" && activeView !== "whereUsed") whereUsedReturnView = activeView;
       activeView = view;
       if (view === "whereUsed") {
@@ -246,7 +253,39 @@ export function createExplorerHtml(
       vscode.postMessage({ type: "setView", view });
       render();
     }
+    function preserveCurrentView() {
+      const content = document.createDocumentFragment();
+      content.append(...main.childNodes);
+      viewHistory.push({
+        view: activeView,
+        content,
+        scrollY: window.scrollY,
+        whereUsedObjectKey,
+        whereUsedMember,
+        selectedObjectKey,
+        detailsReturnView,
+        whereUsedReturnView,
+      });
+    }
+    function restorePreviousView(fallbackView) {
+      const previous = viewHistory.pop();
+      if (!previous) {
+        goTo(fallbackView);
+        return;
+      }
+      activeView = previous.view;
+      whereUsedObjectKey = previous.whereUsedObjectKey;
+      whereUsedMember = previous.whereUsedMember;
+      selectedObjectKey = previous.selectedObjectKey;
+      detailsReturnView = previous.detailsReturnView;
+      whereUsedReturnView = previous.whereUsedReturnView;
+      main.replaceChildren(previous.content);
+      renderNavigation();
+      vscode.postMessage({ type: "setView", view: activeView });
+      requestAnimationFrame(() => window.scrollTo(0, previous.scrollY));
+    }
     function openWhereUsed(object, member) {
+      preserveCurrentView();
       whereUsedObjectKey = object.key;
       whereUsedMember = member;
       whereUsedReturnView = activeView;
@@ -255,6 +294,7 @@ export function createExplorerHtml(
       render();
     }
     function openObjectDetails(object) {
+      preserveCurrentView();
       selectedObjectKey = object.key;
       detailsReturnView = activeView === "objectDetails" ? detailsReturnView : activeView;
       activeView = "objectDetails";
@@ -515,7 +555,7 @@ export function createExplorerHtml(
       main.append(panel);
       drawGalaxy();
     }
-    function addTableGraphNode(parent, object, x, y, width, height, isCenter) {
+    function addTableGraphNode(parent, object, x, y, width, height, isCenter, relationFields = []) {
       const item = document.createElementNS(parent.namespaceURI, "g");
       item.setAttribute("class", "graph-object node-interactive" + (isCenter ? " center-node" : ""));
       item.setAttribute("role", "button");
@@ -530,17 +570,31 @@ export function createExplorerHtml(
       rect.setAttribute("class", "node");
       const label = document.createElementNS(parent.namespaceURI, "text");
       label.setAttribute("x", String(x + width / 2));
-      label.setAttribute("y", String(y + 25));
+      label.setAttribute("y", String(y + (relationFields.length ? 22 : 30)));
       label.setAttribute("text-anchor", "middle");
       label.setAttribute("class", "node-label");
       label.textContent = object.name + " · ID " + object.id;
       const meta = document.createElementNS(parent.namespaceURI, "text");
       meta.setAttribute("x", String(x + width / 2));
-      meta.setAttribute("y", String(y + 44));
+      meta.setAttribute("y", String(y + (relationFields.length ? 42 : 53)));
       meta.setAttribute("text-anchor", "middle");
       meta.setAttribute("class", "edge-label");
       meta.textContent = object.kind + " · " + object.packageName;
       item.append(rect, label, meta);
+      if (relationFields.length) {
+        const fieldLabel = document.createElementNS(parent.namespaceURI, "text");
+        fieldLabel.setAttribute("x", String(x + width / 2));
+        fieldLabel.setAttribute("y", String(y + 63));
+        fieldLabel.setAttribute("text-anchor", "middle");
+        fieldLabel.setAttribute("class", "edge-label relation-field-label");
+        fieldLabel.textContent = relationFields.join(", ");
+        if (relationFields.join(", ").length * 5.5 > 220) {
+          fieldLabel.setAttribute("textLength", "220");
+          fieldLabel.setAttribute("lengthAdjust", "spacingAndGlyphs");
+        }
+        fieldLabel.setAttribute("aria-label", "Related field: " + relationFields.join(", "));
+        item.append(fieldLabel);
+      }
       item.addEventListener("dblclick", (event) => {
         event.preventDefault();
         openObjectDetails(object);
@@ -593,7 +647,7 @@ export function createExplorerHtml(
       world.setAttribute("class", "graph-world");
       svg.append(world);
       const nodeWidth = 250;
-      const nodeHeight = 58;
+      const nodeHeight = 76;
       const centerNode = addTableGraphNode(world, center, centerX - nodeWidth / 2, centerY - nodeHeight / 2, nodeWidth, nodeHeight, true);
       centerNode.setAttribute("aria-label", "Open details for center table " + center.name);
       const addRelatedColumn = (entries, side) => {
@@ -601,14 +655,15 @@ export function createExplorerHtml(
         const startY = centerY - ((entries.length - 1) * rowHeight) / 2;
         entries.forEach(({ object, relations }, index) => {
           const y = startY + index * rowHeight;
-          const objectNode = addTableGraphNode(world, object, x, y - nodeHeight / 2, nodeWidth, nodeHeight, false);
+          const fieldNames = [...new Set(relations.map((relation) => relation.type.replace("TableRelation · ", "")))];
+          const objectNode = addTableGraphNode(world, object, x, y - nodeHeight / 2, nodeWidth, nodeHeight, false, fieldNames);
           const edge = document.createElementNS(svg.namespaceURI, "path");
           const fromX = side === "left" ? x + nodeWidth : centerX - nodeWidth / 2;
           const toX = side === "left" ? centerX - nodeWidth / 2 : x;
           edge.setAttribute("d", "M " + fromX + " " + y + " C " + (fromX + toX) / 2 + " " + y + ", " + (fromX + toX) / 2 + " " + centerY + ", " + toX + " " + centerY);
           edge.setAttribute("class", "edge" + (relations.some((relation) => relation.conditional) ? " conditional" : ""));
           const title = document.createElementNS(svg.namespaceURI, "title");
-          title.textContent = relations.map((relation) => relation.type.replace("TableRelation · ", "")).join("; ");
+          title.textContent = fieldNames.join("; ");
           edge.append(title);
           world.insertBefore(edge, centerNode);
         });
@@ -890,12 +945,18 @@ export function createExplorerHtml(
         summaryIdentity.append(node("span", "badge", "ID " + object.id));
         summary.append(summaryIdentity);
         const body = node("div", "object-body");
-        const heading = node("div", "definition-head");
+        const heading = node("div", kind === "table" ? "definition-head table-definition-head" : "definition-head");
         const meta = node("div", "definition-meta", object.kind + " · " + object.packageName + " · " + object.sourcePath + ":" + object.line);
         heading.append(meta);
-        addViewSourceAction(heading, object, object.line);
+        const sourceColumn = node("div", "definition-action-column");
+        sourceColumn.append(node("span", "definition-action-label", "Source"));
+        addViewSourceAction(sourceColumn, object, object.line);
+        heading.append(sourceColumn);
         if (kind === "table" || kind === "page") {
-          heading.append(makeButton("Where used", "open-button", () => openWhereUsed(object)));
+          const whereUsedColumn = node("div", "definition-action-column");
+          whereUsedColumn.append(node("span", "definition-action-label", "Impact"));
+          whereUsedColumn.append(makeButton("Where used", "open-button", () => openWhereUsed(object)));
+          heading.append(whereUsedColumn);
         }
         body.append(heading);
         const properties = Object.entries(object.properties);
@@ -953,7 +1014,7 @@ export function createExplorerHtml(
       const object = objectsByKey.get(selectedObjectKey);
       if (!object) {
         renderHeading("Object details", "Object not found", "The selected object is no longer available in this analysis.");
-        main.append(makeButton("Back to Galaxy View", "open-button", () => goTo(detailsReturnView)));
+        main.append(makeButton("Back to Galaxy View", "open-button", () => restorePreviousView(detailsReturnView)));
         return;
       }
       renderHeading(object.kind, object.name, object.properties.Caption ? "Caption: " + object.properties.Caption : "Object details and references.");
@@ -961,7 +1022,7 @@ export function createExplorerHtml(
       panel.append(node("h2", "", object.kind + " " + object.id));
       panel.append(node("p", "definition-meta", object.packageName + " · " + object.sourcePath + ":" + object.line));
       const actions = node("div", "toolbar");
-      actions.append(makeButton("Back to " + titleFor(detailsReturnView), "open-button", () => goTo(detailsReturnView)));
+      actions.append(makeButton("Back to " + titleFor(detailsReturnView), "open-button", () => restorePreviousView(detailsReturnView)));
       addViewSourceAction(actions, object, object.line);
       actions.append(makeButton("Where used", "open-button", () => openWhereUsed(object)));
       panel.append(actions);
@@ -991,7 +1052,7 @@ export function createExplorerHtml(
       renderHeading("Impact analysis", "Where Used", "Review the selected object and its fields, then inspect every indexed source location that references it.");
       const selectedObject = objectsByKey.get(whereUsedObjectKey);
       const actions = node("div", "toolbar");
-      actions.append(makeButton("Back to " + titleFor(whereUsedReturnView), "open-button", () => goTo(whereUsedReturnView)));
+      actions.append(makeButton("Back to " + titleFor(whereUsedReturnView), "open-button", () => restorePreviousView(whereUsedReturnView)));
       if (selectedObject) main.append(actions, renderWhereUsedSummary(selectedObject, whereUsedMember));
       else main.append(actions);
       const host = node("div");
@@ -1212,6 +1273,7 @@ export function createExplorerHtml(
         return;
       }
       if (message && message.type === "setView" && viewItems.some(([key]) => key === message.view)) {
+        viewHistory.length = 0;
         activeView = message.view;
         render();
       }
