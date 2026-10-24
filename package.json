@@ -1,0 +1,114 @@
+{
+  "name": "business-central-explorer",
+  "displayName": "Business Central Explorer",
+  "description": "Explore Business Central AL dependencies, objects, and integration events.",
+  "version": "0.2.3",
+  "publisher": "aardvarklabs",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AardvarkMan/Business-Central-Explorer"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "business central",
+    "dynamics 365",
+    "al",
+    "dependencies"
+  ],
+  "activationEvents": [
+    "workspaceContains:app.json",
+    "onCommand:businessCentralExplorer.open",
+    "onView:businessCentralExplorer.explorer"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "businessCentralExplorer.open",
+        "title": "Business Central Explorer: Open Overview"
+      },
+      {
+        "command": "businessCentralExplorer.relationships",
+        "title": "Business Central Explorer: Relationships"
+      },
+      {
+        "command": "businessCentralExplorer.galaxy",
+        "title": "Business Central Explorer: Galaxy View"
+      },
+      {
+        "command": "businessCentralExplorer.tables",
+        "title": "Business Central Explorer: Tables"
+      },
+      {
+        "command": "businessCentralExplorer.whereUsed",
+        "title": "Business Central Explorer: Where Used"
+      },
+      {
+        "command": "businessCentralExplorer.pages",
+        "title": "Business Central Explorer: Pages"
+      },
+      {
+        "command": "businessCentralExplorer.reports",
+        "title": "Business Central Explorer: Reports"
+      },
+      {
+        "command": "businessCentralExplorer.integrationEvents",
+        "title": "Business Central Explorer: Integration Events"
+      },
+      {
+        "command": "businessCentralExplorer.refresh",
+        "title": "Business Central Explorer: Refresh Analysis"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "businessCentralExplorer",
+          "title": "BC Explorer",
+          "icon": "resources/bc-explorer.svg"
+        }
+      ]
+    },
+    "views": {
+      "businessCentralExplorer": [
+        {
+          "id": "businessCentralExplorer.explorer",
+          "name": "Business Central Explorer"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "businessCentralExplorer.refresh",
+          "when": "view == businessCentralExplorer.explorer",
+          "group": "navigation"
+        },
+        {
+          "command": "businessCentralExplorer.open",
+          "when": "view == businessCentralExplorer.explorer",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "test": "npm run compile && node --test out/test/*.test.js",
+    "vscode:prepublish": "npm run compile"
+  },
+  "dependencies": {
+    "jszip": "^3.10.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.7.2"
+  }
+}
