@@ -213,7 +213,7 @@ async function openExplorer(view: ExplorerView): Promise<void> {
           const document = await vscode.workspace.openTextDocument(uri);
           await vscode.languages.setTextDocumentLanguage(document, "al");
           const editor = await vscode.window.showTextDocument(document, {
-            viewColumn: vscode.ViewColumn.Beside,
+            viewColumn: vscode.ViewColumn.One,
             preview: false,
           });
           const line = Math.min(Math.max(0, message.line - 1), document.lineCount - 1);
@@ -234,7 +234,7 @@ async function openExplorer(view: ExplorerView): Promise<void> {
       try {
         const document = await vscode.workspace.openTextDocument(vscode.Uri.file(message.path));
         const editor = await vscode.window.showTextDocument(document, {
-          viewColumn: vscode.ViewColumn.Beside,
+          viewColumn: vscode.ViewColumn.One,
           preview: false,
         });
         const line = Math.min(Math.max(0, message.line - 1), document.lineCount - 1);
