@@ -16,7 +16,13 @@ export type ObjectKind =
   | "unknown";
 
 export type SourceType = "workspace" | "package";
-export type AnalysisPhase = "manifests" | "sources" | "packages" | "relationships" | "usages";
+export type AnalysisPhase =
+  | "manifests"
+  | "sources"
+  | "packages"
+  | "relationships"
+  | "usages"
+  | "finalizing";
 
 export interface FieldInfo {
   id: string;
@@ -29,6 +35,28 @@ export interface FieldInfo {
 export interface PageControlGroup {
   group: string;
   controls: string[];
+}
+
+export interface ReportDataItem {
+  name: string;
+  sourceTable: string;
+  line: number;
+  properties: Record<string, string>;
+}
+
+export interface IntegrationEventParameter {
+  name: string;
+  type: string;
+  byReference: boolean;
+}
+
+export interface IntegrationEventInfo {
+  name: string;
+  line: number;
+  definition: string;
+  comment: string;
+  parameters: IntegrationEventParameter[];
+  attributeArguments: string[];
 }
 
 export interface ObjectInfo {
@@ -44,9 +72,12 @@ export interface ObjectInfo {
   controls: string[];
   controlGroups?: PageControlGroup[];
   dataItems: string[];
+  reportDataItems?: ReportDataItem[];
+  reportRequestPageControls?: PageControlGroup[];
   procedures: string[];
   integrationEvents: string[];
   integrationEventLines: Record<string, number>;
+  integrationEventDetails?: IntegrationEventInfo[];
   properties: Record<string, string>;
   sourceText: string;
 }

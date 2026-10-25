@@ -1,6 +1,10 @@
 # Aardvark Labs Business Central Explorer
 
-![Aardvark Labs logo](resources/aardvarklabs-logo.jpg)
+![Aardvark Labs logo](resources/aardvark-labs-logo.jpg)
+
+The branded icon assets are `resources/store-icon.png` (512 × 512) and
+`resources/extension-list-icon.png` (128 × 128). VS Code's extension manifest
+uses the 128 × 128 PNG as the extension icon.
 
 Business Central Explorer is a Visual Studio Code extension for learning how a
 Business Central AL extension is put together and how it connects to the
@@ -28,14 +32,18 @@ download, or Business Central runtime.
 
 | View | What it helps you investigate |
 | --- | --- |
-| **Overview** | The analyzed workspaces and packages, dependency coverage, object counts, and diagnostics. |
+| **Overview** | The extension version, analyzed workspaces and packages, dependency coverage, object counts, and diagnostics. |
 | **Relationships** | Table `TableRelation` targets around a selected table. Edge labels show the source field; solid edges are unconditional and dotted edges indicate a conditional `if` clause. Filter related tables by name or ID. |
 | **Galaxy View** | Objects grouped by extension. It starts with tables and table extensions and draws extension modification (`extends`) links—not data relationships. Enable other object types, search, zoom, and pan to navigate. |
 | **Tables** | Search table and table-extension definitions by name or ID. Expand an object to inspect metadata and fields, then open where-used results for a table or field. |
-| **Where Used** | Review indexed references to an object or field, with source line and excerpt. Follow related-table links or open the source location. |
 | **Pages** | Inspect pages and page extensions, their source-table metadata, and controls grouped by layout area/group. |
-| **Reports** | Inspect reports and report extensions, including recognized properties and dataset data items. |
-| **Integration Events** | Find integration-event publishers and filter by containing object or associated table. Associated tables are inferred through object relationships. |
+| **Reports** | Review report and report-extension data sources, source tables, request filters, table links, sorting, request-page fields, and report properties. |
+| **Integration Events** | Evaluate event contracts for implementation: filter by the type of the object that defines the event; inspect its documentation comment, declaration, parameters, and attribute flags; then review indexed call sites and subscribers. Events are identified by owning object plus name, so same-name events remain separate. |
+
+Where-used results are opened from table and field definitions rather than a
+standalone navigation item, keeping each reference search scoped to the object
+being investigated.
+| **Documentation** | Preview and export a portable Markdown reference with object definitions, package inventory, relationship narratives, field lineage, indexed event references, diagnostics, and analysis limitations. |
 
 Object detail and where-used drill-downs include **Back** actions that restore
 the previous rendered view, including its filters, diagram state, and scroll
@@ -43,6 +51,29 @@ position. **View Source** opens workspace files in an editor tab. When a
 dependency package contains an included `.al` source file, it opens in a
 read-only virtual `.al` editor document. Symbol-only package objects do not
 have source code to open.
+
+### Generate a project reference
+
+Open **Documentation** in the explorer to preview the Markdown reference
+generated from a selected scope. Choose **Project** to document only source
+objects in that workspace project, or **AL Package** to document only objects
+from the selected analyzed `.app` dependency. Relationships and where-used
+references are limited to objects within that selection. Select **Export
+Markdown** to choose a destination; the default filename is based on the
+selected project or package name.
+
+The report includes package identities and declared dependencies, a narrative
+of mapped object relationships, an object-by-object reference, table field
+definitions and indexed where-used results, integration-event publisher and
+possible subscriber references, diagnostics, and snapshot metadata. Local
+source paths are reduced to filenames in the exported document.
+
+The report also states its coverage limitations. In particular, event
+trigger and subscriber matches are inferred from indexed event-name references, and
+where-used matches are token-based—not compiler-validated bindings. Package
+symbols may not include source or detailed locations. Use the report as a
+navigation and learning aid, and verify important conclusions against source
+and compiler output.
 
 ## How the analysis works
 

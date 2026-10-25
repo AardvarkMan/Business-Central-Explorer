@@ -9,7 +9,8 @@ export type ExplorerView =
   | "whereUsed"
   | "pages"
   | "reports"
-  | "integrationEvents";
+  | "integrationEvents"
+  | "documentation";
 
 export interface ExplorerProgress {
   message: string;
@@ -24,19 +25,33 @@ export function createExplorerHtml(
   analysis: Analysis,
   selectedView: ExplorerView,
   progress?: ExplorerProgress,
+  extensionVersion = "unknown",
 ): string {
   const nonce = createNonce();
   const webviewAnalysis = {
     ...analysis,
     objects: analysis.objects.map((object) => ({
       ...object,
-      sourceText: object.sourceType === "package" ? object.sourceText : "",
+      sourceText: "",
+      hasSourceText: !!object.sourceText,
     })),
   };
   const serializedAnalysis = JSON.stringify(webviewAnalysis)
     .replace(/</g, "\\u003c")
     .replace(/\u2028/g, "\\u2028")
     .replace(/\u2029/g, "\\u2029");
+  const projectNames = [...new Set(
+    analysis.objects.filter((object) => object.sourceType === "workspace").map((object) => object.packageName),
+  )].sort((left, right) => left.localeCompare(right));
+  const packageNames = [...new Set([
+    ...analysis.packages.map((pkg) => pkg.name),
+    ...analysis.objects.filter((object) => object.sourceType === "package").map((object) => object.packageName),
+  ])].sort((left, right) => left.localeCompare(right));
+  const initialDocumentationScope = projectNames.length
+    ? { kind: "project", name: projectNames[0] }
+    : packageNames.length
+      ? { kind: "package", name: packageNames[0] }
+      : undefined;
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -80,6 +95,7 @@ export function createExplorerHtml(
     .loading-task-fill { height: 100%; width: 0; background: var(--brand-gold); transition: width .25s ease; }
     .loading-task.current .loading-task-fill { background: linear-gradient(90deg, var(--brand-gold), #fff2b8, var(--brand-gold)); background-size: 200% 100%; animation: task-shimmer 1.3s linear infinite; }
     .loading-task-percent { color: var(--vscode-descriptionForeground); font-size: 10px; text-align: right; }
+    .loading-log { max-height: 180px; overflow: auto; padding: 9px 10px; margin: 12px 0 0; border: 1px solid var(--line); border-radius: 5px; color: var(--vscode-terminal-foreground, var(--vscode-foreground)); background: var(--vscode-terminal-background, var(--vscode-editor-background)); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; font: 10px/1.45 var(--vscode-editor-font-family, monospace); }
     @keyframes task-shimmer { to { background-position: -200% 0; } }
     .loading[hidden] { display: none; }
     .loading-label { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
@@ -92,6 +108,10 @@ export function createExplorerHtml(
     .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; margin: 0 0 18px; }
     .search { width: min(100%, 380px); border: 1px solid var(--vscode-input-border, var(--line)); border-radius: 4px; padding: 7px 9px; color: var(--vscode-input-foreground); background: var(--vscode-input-background); }
     .select { min-width: min(100%, 320px); border: 1px solid var(--vscode-input-border, var(--line)); border-radius: 4px; padding: 7px 9px; color: var(--vscode-input-foreground); background: var(--vscode-input-background); }
+    .event-filters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 0 0 18px; }
+    .event-filter { display: grid; min-width: 0; gap: 5px; }
+    .event-filter-label { color: var(--vscode-descriptionForeground); font-size: 11px; font-weight: 600; }
+    .event-filter .search, .event-filter .select { width: 100%; min-width: 0; max-width: none; }
     .badge { display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 999px; padding: 2px 9px; color: var(--vscode-descriptionForeground); font-size: 11px; white-space: nowrap; }
     .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(155px, 1fr)); gap: 12px; margin: 17px 0 25px; }
     .card, .panel { border: 1px solid var(--line); border-radius: 7px; background: color-mix(in srgb, var(--vscode-editor-background) 92%, var(--vscode-sideBar-background)); }
@@ -99,6 +119,8 @@ export function createExplorerHtml(
     .card-label { color: var(--vscode-descriptionForeground); font-size: 11px; }
     .card-value { margin-top: 2px; font-size: 25px; font-weight: 650; }
     .panel { padding: 16px 18px; margin: 14px 0; }
+    .documentation-preview { max-height: 72vh; overflow: auto; padding: 20px; border: 1px solid var(--line); border-radius: 7px; background: color-mix(in srgb, var(--vscode-editor-background) 92%, var(--vscode-sideBar-background)); white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.65 var(--vscode-editor-font-family, monospace); }
+    .documentation-note { padding: 12px 14px; margin: 0 0 16px; border-left: 3px solid var(--brand-gold); background: var(--soft); color: var(--vscode-descriptionForeground); }
     .object-card { padding: 0; overflow: hidden; }
     .object-card > summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 18px; cursor: pointer; list-style-position: inside; }
     .object-card > summary:hover { background: var(--soft); }
@@ -129,13 +151,32 @@ export function createExplorerHtml(
     .field-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
     .field-table th, .field-table td { padding: 6px 8px; border-top: 1px solid var(--line); text-align: left; vertical-align: top; }
     .field-table th { color: var(--vscode-descriptionForeground); font-size: 11px; font-weight: 600; }
-    .usage-table { min-width: 900px; }
+    .report-section { margin-top: 18px; }
+    .report-section h3 { margin: 0 0 7px; font-size: 13px; }
+    .report-data-table { min-width: 940px; }
+    .report-data-table td { white-space: pre-line; overflow-wrap: anywhere; }
+    .report-field-list { margin-top: 5px; color: var(--vscode-descriptionForeground); }
+    .event-contract { padding-top: 14px; margin-top: 14px; border-top: 1px solid var(--line); }
+    .event-contract h3 { margin: 0 0 8px; font-size: 13px; }
+    .event-documentation { padding: 10px 12px; margin: 0 0 9px; border-left: 2px solid var(--brand-gold); background: var(--soft); white-space: pre-wrap; }
+    .event-definition { display: block; margin: 8px 0 12px; padding: 9px 11px; background: var(--vscode-textCodeBlock-background); white-space: pre-wrap; overflow-wrap: anywhere; }
+    .event-parameter-table { max-width: 760px; margin-bottom: 12px; }
+    .event-reference { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); }
+    .event-excerpt { display: block; margin-top: 5px; color: var(--vscode-textPreformat-foreground); white-space: pre-wrap; overflow-wrap: anywhere; }
+    .usage-table { min-width: 900px; table-layout: fixed; }
     .usage-table td { overflow-wrap: anywhere; }
+    .usage-table th:nth-child(1), .usage-table td:nth-child(1) { width: 19%; }
+    .usage-table th:nth-child(2), .usage-table td:nth-child(2) { width: 13%; }
+    .usage-table th:nth-child(3), .usage-table td:nth-child(3) { width: 6%; }
+    .usage-table th:nth-child(4), .usage-table td:nth-child(4) { width: 37%; }
+    .usage-table th:last-child, .usage-table td:last-child { width: 25%; min-width: 155px; }
+    .usage-actions { display: grid; gap: 6px; }
+    .usage-actions .open-button { width: 100%; }
     .table-scroll { width: 100%; overflow-x: auto; }
     .usage-details summary { color: var(--vscode-textLink-foreground); cursor: pointer; font-weight: 600; }
     .usage-detail-body { max-width: 560px; margin: 7px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
     .source-view { max-height: 72vh; overflow: auto; padding: 16px; border: 1px solid var(--line); border-radius: 7px; background: var(--vscode-textCodeBlock-background); font: 12px/1.55 var(--vscode-editor-font-family); white-space: pre; tab-size: 4; }
-    .tree-visual { width: 100%; overflow: auto; border: 1px solid var(--line); border-radius: 7px; background: color-mix(in srgb, var(--vscode-editor-background) 90%, var(--vscode-sideBar-background)); cursor: grab; touch-action: none; }
+    .tree-visual { position: relative; width: 100%; overflow: auto; border: 1px solid var(--line); border-radius: 7px; background: color-mix(in srgb, var(--vscode-editor-background) 90%, var(--vscode-sideBar-background)); cursor: grab; touch-action: none; }
     .tree-visual:active { cursor: grabbing; }
     .tree-visual svg { display: block; width: 100%; min-width: 760px; }
     .tree-visual svg.table-relationship-svg { height: min(70vh, 720px); min-width: 0; }
@@ -148,7 +189,17 @@ export function createExplorerHtml(
     .type-key { display: flex; flex-wrap: wrap; gap: 6px 12px; min-width: min(100%, 380px); padding: 8px 12px; border: 1px solid var(--line); border-radius: 5px; }
     .type-key legend { padding: 0 5px; color: var(--vscode-descriptionForeground); font-size: 11px; }
     .type-choice { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
-    .galaxy-dot { fill: var(--cluster-color); stroke: var(--vscode-editor-background); stroke-width: 1.5; }
+    .galaxy-dot { fill: var(--cluster-color); stroke: var(--vscode-editor-background); stroke-width: 2; }
+    .galaxy-point:hover .galaxy-dot { stroke: var(--vscode-focusBorder); stroke-width: 3; }
+    .galaxy-point.is-selected .galaxy-dot, .galaxy-point.is-related-endpoint .galaxy-dot { stroke: var(--vscode-focusBorder); stroke-width: 4; }
+    .galaxy-point.is-selected .galaxy-dot { filter: drop-shadow(0 0 5px var(--vscode-focusBorder)); }
+    .galaxy-point.is-dimmed, .edge.is-dimmed { opacity: .16; }
+    .edge.is-related { stroke: var(--vscode-focusBorder); stroke-width: 4; filter: drop-shadow(0 0 3px var(--vscode-focusBorder)); }
+    .galaxy-magnifier { position: absolute; z-index: 2; display: flex; align-items: center; gap: 10px; max-width: min(360px, calc(100% - 20px)); padding: 9px 13px 9px 9px; border: 2px solid var(--vscode-focusBorder); border-radius: 999px; color: var(--vscode-foreground); background: color-mix(in srgb, var(--vscode-editor-background) 95%, transparent); box-shadow: 0 5px 18px #0008; pointer-events: none; transform: translate(14px, 14px); }
+    .galaxy-magnifier[hidden] { display: none; }
+    .galaxy-magnifier-lens { display: grid; flex: 0 0 44px; width: 44px; height: 44px; place-items: center; border: 2px solid var(--vscode-focusBorder); border-radius: 50%; background: var(--vscode-editor-background); }
+    .galaxy-magnifier-dot { width: 18px; height: 18px; border: 2px solid var(--vscode-editor-background); border-radius: 50%; background: var(--cluster-color); box-shadow: 0 0 0 2px var(--cluster-color); }
+    .galaxy-magnifier-name { overflow: hidden; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
     .galaxy-object-label { visibility: hidden; fill: var(--vscode-foreground); font: 11px var(--vscode-font-family); paint-order: stroke; stroke: var(--vscode-editor-background); stroke-width: 4px; stroke-linejoin: round; pointer-events: none; }
     .galaxy-object-label.visible { visibility: visible; }
     .graph-world { transform-origin: 0 0; }
@@ -164,7 +215,7 @@ export function createExplorerHtml(
     .link-button { border: 0; padding: 0; color: var(--vscode-textLink-foreground); background: none; cursor: pointer; text-align: left; }
     .link-button:hover { text-decoration: underline; }
     .footer { padding-top: 18px; margin-top: 28px; border-top: 1px solid var(--line); color: var(--vscode-descriptionForeground); font-size: 11px; }
-    @media (max-width: 720px) { .layout { grid-template-columns: 1fr; } nav { display: flex; gap: 4px; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--line); padding: 8px; } .nav-label { display: none; } .nav-button { width: auto; white-space: nowrap; } main { padding: 20px 15px 45px; } .scope { display: none; } }
+    @media (max-width: 720px) { .layout { grid-template-columns: 1fr; } nav { display: flex; gap: 4px; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--line); padding: 8px; } .nav-label { display: none; } .nav-button { width: auto; white-space: nowrap; } main { padding: 20px 15px 45px; } .scope { display: none; } .event-filters { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
@@ -188,6 +239,7 @@ export function createExplorerHtml(
           <div class="loading-label"><span class="loading-spinner" aria-hidden="true"></span><span id="loading-message">Preparing analysis…</span></div>
           <div class="progress-track"><div id="progress-fill" class="progress-fill indeterminate"></div></div>
           <div id="loading-tasks" class="loading-tasks"></div>
+          <pre id="loading-log" class="loading-log" role="log" aria-label="Analysis system log" aria-live="off"></pre>
         </section>
         <div id="main" aria-live="polite"></div>
       </main>
@@ -197,17 +249,39 @@ export function createExplorerHtml(
     const analysis = ${serializedAnalysis};
     const initialView = ${JSON.stringify(selectedView)};
     const initialProgress = ${JSON.stringify(progress ?? null)};
+    const extensionVersion = ${JSON.stringify(extensionVersion)};
+    const projectNames = ${JSON.stringify(projectNames)};
+    const packageNames = ${JSON.stringify(packageNames)};
+    const initialDocumentationScope = ${JSON.stringify(initialDocumentationScope ?? null)};
+    const documentationMarkdown = "";
     const vscode = acquireVsCodeApi();
     const viewItems = [
       ["overview", "Overview", "◆"],
       ["relationships", "Relationships", "↗"],
       ["galaxy", "Galaxy View", "✦"],
       ["tables", "Tables", "▤"],
-      ["whereUsed", "Where Used", "⌕"],
       ["pages", "Pages", "▣"],
       ["reports", "Reports", "▥"],
-      ["integrationEvents", "Integration Events", "⚡"]
+      ["integrationEvents", "Integration Events", "⚡"],
+      ["documentation", "Documentation", "▧"]
     ];
+    const typeLabels = {
+      table: "Table",
+      tableextension: "Table Extension",
+      page: "Page",
+      pageextension: "Page Extension",
+      report: "Report",
+      reportextension: "Report Extension",
+      codeunit: "Code Unit",
+      enum: "Enum",
+      interface: "Interface",
+      query: "Query",
+      xmlport: "XMLport",
+      permissionset: "Permission Set",
+      profile: "Profile",
+      controladdin: "Control Add-in",
+      unknown: "Other",
+    };
     const objectsByKey = new Map(analysis.objects.map((item) => [item.key, item]));
     let activeView = initialView;
     let whereUsedObjectKey;
@@ -221,12 +295,17 @@ export function createExplorerHtml(
     const loadingMessage = document.getElementById("loading-message");
     const progressFill = document.getElementById("progress-fill");
     const loadingTasks = document.getElementById("loading-tasks");
+    const loadingLog = document.getElementById("loading-log");
+    const loadingLogEntries = [];
+    const maxLoadingLogEntries = 300;
+    let lastLoadingLogEntry;
     const analysisTasks = [
       ["manifests", "Read workspace manifests"],
       ["sources", "Load AL source files"],
       ["packages", "Explore .alpackages dependencies"],
       ["relationships", "Map object relationships"],
       ["usages", "Index where-used references"],
+      ["finalizing", "Finalize analysis"],
     ];
 
     function node(tag, className, text) {
@@ -236,6 +315,10 @@ export function createExplorerHtml(
       return element;
     }
     function titleFor(kind) { return kind.charAt(0).toUpperCase() + kind.slice(1); }
+    function sameFieldName(left, right) {
+      return typeof left === "string" && typeof right === "string" &&
+        left.trim().toLowerCase() === right.trim().toLowerCase();
+    }
     function makeButton(text, className, action) {
       const button = node("button", className, text);
       button.type = "button";
@@ -303,14 +386,10 @@ export function createExplorerHtml(
     function openObjectSource(object, line) {
       if (object.sourceType === "workspace") {
         openObject(object, line);
-      } else if (object.sourceText) {
-        const archiveEntry = object.sourcePath.split("!/").pop() || "";
-        const fileName = archiveEntry.split(/[\\/]/).pop() || object.name + ".al";
-        const extension = /\.(?:al|dal)$/i.test(fileName) ? fileName.match(/\.(?:al|dal)$/i)?.[0] : undefined;
+      } else if (object.hasSourceText) {
         vscode.postMessage({
           type: "openSourceDocument",
-          fileName: extension ? fileName : object.name + ".al",
-          sourceText: object.sourceText,
+          objectKey: object.key,
           line: Math.max(1, line || object.line),
         });
       }
@@ -322,6 +401,25 @@ export function createExplorerHtml(
       }
       loading.hidden = false;
       loadingMessage.textContent = progress.message || "Processing…";
+      const total = Number(progress.total);
+      const completed = Number(progress.completed);
+      const hasCount = Number.isFinite(total) && total > 0 && Number.isFinite(completed);
+      const entryKey = JSON.stringify([
+        progress.phase ?? "general",
+        progress.message ?? "Processing…",
+        hasCount ? completed : null,
+        hasCount ? total : null,
+      ]);
+      if (entryKey !== lastLoadingLogEntry) {
+        lastLoadingLogEntry = entryKey;
+        const timestamp = new Date().toISOString();
+        const phase = progress.phase ?? "general";
+        const count = hasCount ? " " + completed + "/" + total : "";
+        loadingLogEntries.push("[" + timestamp + "] [" + phase + "]" + count + " " + (progress.message || "Processing…"));
+        if (loadingLogEntries.length > maxLoadingLogEntries) loadingLogEntries.shift();
+        loadingLog.textContent = loadingLogEntries.join("\\n");
+        loadingLog.scrollTop = loadingLog.scrollHeight;
+      }
       const phaseIndex = analysisTasks.findIndex(([phase]) => phase === progress.phase);
       loadingTasks.replaceChildren();
       for (const [index, [phase, label]] of analysisTasks.entries()) {
@@ -344,9 +442,7 @@ export function createExplorerHtml(
         row.append(taskLabel, bar, percent);
         loadingTasks.append(row);
       }
-      const total = Number(progress.total);
-      const completed = Number(progress.completed);
-      if (Number.isFinite(total) && total > 0 && Number.isFinite(completed)) {
+      if (hasCount) {
         progressFill.classList.remove("indeterminate");
         progressFill.style.width = Math.max(0, Math.min(100, completed / total * 100)) + "%";
       } else {
@@ -378,12 +474,15 @@ export function createExplorerHtml(
       }
     }
     function addViewSourceAction(parent, object, line) {
-      const button = makeButton("View Source", "open-button", () => openObjectSource(object, line));
-      if (object.sourceType !== "workspace" && !object.sourceText) {
+      parent.append(createSourceButton("View Source", object, line));
+    }
+    function createSourceButton(label, object, line) {
+      const button = makeButton(label, "open-button", () => openObjectSource(object, line));
+      if (object.sourceType !== "workspace" && !object.hasSourceText) {
         button.disabled = true;
         button.title = "Source code is not included in this package's symbol reference.";
       }
-      parent.append(button);
+      return button;
     }
     function renderOverview() {
       renderHeading("Aardvark Labs · AL project intelligence", "Extension overview", "A live index of AL objects in this workspace and the .app dependencies available in .alpackages.");
@@ -435,7 +534,7 @@ export function createExplorerHtml(
         diagnosticPanel.append(row);
       }
       main.append(diagnosticPanel);
-      const notes = node("p", "footer", currentObjects + " workspace objects · " + tables + " tables · Last indexed " + new Date(analysis.analyzedAt).toLocaleString());
+      const notes = node("p", "footer", "Version " + extensionVersion + " · " + currentObjects + " workspace objects · " + tables + " tables · Last indexed " + new Date(analysis.analyzedAt).toLocaleString());
       main.append(notes);
     }
     function makeSearch(placeholder, onChange) {
@@ -468,7 +567,7 @@ export function createExplorerHtml(
       const allTables = node("option", "", "Choose center table");
       allTables.value = "";
       tableSelect.append(allTables);
-      const startTables = [...new Map(tableRelations.flatMap(({ source, target }) => [[source.key, source], [target.key, target]])).values()]
+      const startTables = analysis.objects
         .filter((object) => object.kind === "table" || object.kind === "tableextension")
         .sort((a, b) => a.name.localeCompare(b.name) || a.packageName.localeCompare(b.packageName));
       for (const table of startTables) {
@@ -476,6 +575,7 @@ export function createExplorerHtml(
         option.value = table.key;
         tableSelect.append(option);
       }
+      tableSelect.value = startTables[0]?.key ?? "";
       const relatedFilter = node("input", "search");
       relatedFilter.type = "search";
       relatedFilter.placeholder = "Filter related table names or IDs…";
@@ -617,9 +717,9 @@ export function createExplorerHtml(
         (source.key === center?.key && (target.name + " " + target.id).toLowerCase().includes(relatedKey)) ||
         (target.key === center?.key && (source.name + " " + source.id).toLowerCase().includes(relatedKey)),
       );
-      if (!filtered.length) {
+      if (!center) {
         container.replaceChildren();
-        appendEmpty(container, startingKey ? "No TableRelation links are defined for this table." : "No table-to-table TableRelation links were found.");
+        appendEmpty(container, "No tables are available to display.");
         return;
       }
       const sides = { left: new Map(), right: new Map() };
@@ -750,6 +850,14 @@ export function createExplorerHtml(
       const world = document.createElementNS(svg.namespaceURI, "g");
       world.setAttribute("class", "graph-world");
       svg.append(world);
+      let magnifier;
+      if (clustered) {
+        magnifier = node("div", "galaxy-magnifier");
+        magnifier.hidden = true;
+        const lens = node("span", "galaxy-magnifier-lens");
+        lens.append(node("span", "galaxy-magnifier-dot"));
+        magnifier.append(lens, node("span", "galaxy-magnifier-name"));
+      }
       if (clustered) {
         for (const group of groupedObjects) {
           const info = clusterInfo.get(group.name);
@@ -782,6 +890,8 @@ export function createExplorerHtml(
         const edge = document.createElementNS(svg.namespaceURI, "path");
         edge.setAttribute("d", "M " + source.x + " " + source.y + " L " + target.x + " " + target.y);
         edge.setAttribute("class", "edge" + (relation.conditional ? " conditional" : ""));
+        edge.dataset.sourceKey = relation.sourceKey;
+        edge.dataset.targetKey = relation.targetKey;
         const title = document.createElementNS(svg.namespaceURI, "title");
         title.textContent = relation.type;
         edge.append(title);
@@ -795,11 +905,12 @@ export function createExplorerHtml(
           item.dataset.objectKey = object.key;
           item.dataset.x = String(point.x);
           item.dataset.y = String(point.y);
+          item.dataset.packageName = group.name;
           const marker = document.createElementNS(svg.namespaceURI, clustered ? "circle" : "rect");
           if (clustered) {
             marker.setAttribute("cx", String(point.x));
             marker.setAttribute("cy", String(point.y));
-            marker.setAttribute("r", "5");
+            marker.setAttribute("r", "9");
             marker.setAttribute("class", "galaxy-dot");
             marker.style.setProperty("--cluster-color", colors.get(group.name));
           } else {
@@ -823,6 +934,26 @@ export function createExplorerHtml(
             event.preventDefault();
             openObjectDetails(object);
           });
+          if (clustered) {
+            item.addEventListener("pointerenter", (event) => {
+              magnifier.hidden = false;
+              magnifier.querySelector(".galaxy-magnifier-name").textContent =
+                object.name + " · " + object.kind + " " + object.id;
+              magnifier.querySelector(".galaxy-magnifier-dot").style.setProperty(
+                "--cluster-color",
+                colors.get(group.name),
+              );
+              positionGalaxyMagnifier(magnifier, container, event);
+            });
+            item.addEventListener("pointermove", (event) => positionGalaxyMagnifier(magnifier, container, event));
+            item.addEventListener("pointerleave", () => {
+              magnifier.hidden = true;
+            });
+            item.addEventListener("click", (event) => {
+              event.stopPropagation();
+              selectGalaxyObject(world, object.key);
+            });
+          }
           item.setAttribute("class", item.getAttribute("class") + " node-interactive");
           item.setAttribute("role", "button");
           item.setAttribute("tabindex", "0");
@@ -836,8 +967,44 @@ export function createExplorerHtml(
           world.append(item);
         }
       }
-      container.append(svg);
+      if (clustered) container.append(svg, magnifier);
+      else container.append(svg);
       enableGraphNavigation(container, svg, world, clustered, filtered);
+    }
+    function positionGalaxyMagnifier(magnifier, container, event) {
+      const bounds = container.getBoundingClientRect();
+      const left = Math.min(
+        Math.max(8, event.clientX - bounds.left + container.scrollLeft + 14),
+        Math.max(8, container.scrollLeft + container.clientWidth - magnifier.offsetWidth - 8),
+      );
+      const top = Math.min(
+        Math.max(8, event.clientY - bounds.top + container.scrollTop + 14),
+        Math.max(8, container.scrollTop + container.clientHeight - magnifier.offsetHeight - 8),
+      );
+      magnifier.style.left = left + "px";
+      magnifier.style.top = top + "px";
+    }
+    function selectGalaxyObject(world, objectKey) {
+      const related = new Set([objectKey]);
+      const edges = [...world.querySelectorAll(".edge[data-source-key][data-target-key]")];
+      for (const edge of edges) {
+        if (edge.dataset.sourceKey === objectKey) related.add(edge.dataset.targetKey);
+        if (edge.dataset.targetKey === objectKey) related.add(edge.dataset.sourceKey);
+      }
+      const connectedEdges = edges.filter(
+        (edge) => edge.dataset.sourceKey === objectKey || edge.dataset.targetKey === objectKey,
+      );
+      for (const edge of edges) {
+        edge.classList.toggle("is-related", connectedEdges.includes(edge));
+        edge.classList.toggle("is-dimmed", connectedEdges.length > 0 && !connectedEdges.includes(edge));
+      }
+      for (const point of world.querySelectorAll(".galaxy-point")) {
+        const selected = point.dataset.objectKey === objectKey;
+        const endpoint = !selected && related.has(point.dataset.objectKey);
+        point.classList.toggle("is-selected", selected);
+        point.classList.toggle("is-related-endpoint", endpoint);
+        point.classList.toggle("is-dimmed", connectedEdges.length > 0 && !related.has(point.dataset.objectKey));
+      }
     }
     function enableGraphNavigation(container, svg, world, galaxy, filtered) {
       let scale = galaxy && filtered ? 1.5 : 1;
@@ -863,7 +1030,9 @@ export function createExplorerHtml(
               bounds.left < other.right + 8 && bounds.right + 8 > other.left &&
               bounds.top < other.bottom + 8 && bounds.bottom + 8 > other.top,
             );
-            const visible = scale >= threshold && !overlaps;
+            const visible = scale >= threshold && !overlaps ||
+              point.classList.contains("is-selected") ||
+              point.classList.contains("is-related-endpoint");
             label.classList.toggle("visible", visible);
             if (visible) occupied.push(bounds);
           }
@@ -938,8 +1107,19 @@ export function createExplorerHtml(
         const section = node("details", "panel object-card");
         const summary = node("summary");
         const summaryIdentity = node("span", "object-summary");
-        summaryIdentity.append(node("span", "definition-title", object.name));
-        if (object.properties.Caption) {
+        const definitionCaption = kind === "page" || kind === "table"
+          ? object.properties.Caption?.trim()
+          : undefined;
+        const objectName = object.name.trim() || "Table " + object.id;
+        const displayTitle = kind === "table"
+          ? objectName
+          : definitionCaption || objectName;
+        summaryIdentity.append(node("span", "definition-title", displayTitle));
+        if (kind === "table" && definitionCaption) {
+          summaryIdentity.append(node("span", "object-caption", "Caption: " + definitionCaption));
+        } else if (definitionCaption) {
+          summaryIdentity.append(node("span", "object-caption", "AL object: " + object.name));
+        } else if (object.properties.Caption) {
           summaryIdentity.append(node("span", "object-caption", "Caption: " + object.properties.Caption));
         }
         summaryIdentity.append(node("span", "badge", "ID " + object.id));
@@ -960,7 +1140,7 @@ export function createExplorerHtml(
         }
         body.append(heading);
         const properties = Object.entries(object.properties);
-        if (properties.length) {
+        if (properties.length && kind !== "report") {
           const propertyList = node("div", "property-list");
           for (const [key, value] of properties) propertyList.append(node("span", "badge", key + ": " + value));
           body.append(propertyList);
@@ -978,13 +1158,82 @@ export function createExplorerHtml(
             body.append(groupPanel);
           }
         }
-        if (kind === "report" && object.dataItems.length) {
-          const dataItems = node("div", "property-list");
-          dataItems.append(node("span", "definition-meta", "Data items"));
-          for (const item of object.dataItems) {
-            dataItems.append(node("span", "badge", item));
+        if (kind === "report") {
+          const reportItems = object.reportDataItems?.length
+            ? object.reportDataItems
+            : object.dataItems.map((item) => {
+                const [name, ...tableParts] = item.split(":");
+                return {
+                  name: name.trim(),
+                  sourceTable: tableParts.join(":").trim(),
+                  line: object.line,
+                  properties: {},
+                };
+              });
+          const sources = node("section", "report-section");
+          sources.append(node("h3", "", "Data sources"));
+          if (reportItems.length) {
+            const sourceTable = node("div", "table-scroll");
+            const table = node("table", "field-table report-data-table");
+            const thead = node("thead");
+            const header = node("tr");
+            for (const label of ["Data item", "Source table", "Filters", "Data item links", "Sort / view", "Other"]) {
+              header.append(node("th", "", label));
+            }
+            thead.append(header);
+            const tbody = node("tbody");
+            for (const item of reportItems) {
+              const row = node("tr");
+              const filters = [
+                item.properties.RequestFilterFields && "Request fields: " + item.properties.RequestFilterFields,
+                item.properties.DataItemTableFilter && "Table filter: " + item.properties.DataItemTableFilter,
+                item.properties.RequestFilterHeading && "Filter heading: " + item.properties.RequestFilterHeading,
+              ].filter(Boolean);
+              const links = [
+                item.properties.DataItemLink,
+                item.properties.DataItemLinkReference && "Reference: " + item.properties.DataItemLinkReference,
+              ].filter(Boolean);
+              row.append(
+                node("td", "", item.name),
+                node("td", "", item.sourceTable || "Not available in symbols"),
+                node("td", "", filters.join("\\n") || "—"),
+                node("td", "", links.join("\\n") || "—"),
+                node("td", "", item.properties.DataItemTableView || "—"),
+                node("td", "", [
+                  item.properties.PrintOnlyIfDetail && "Print only if detail: " + item.properties.PrintOnlyIfDetail,
+                  item.properties.MaxIteration && "Maximum iterations: " + item.properties.MaxIteration,
+                ].filter(Boolean).join("\\n") || "—"),
+              );
+              row.title = "AL source line " + item.line;
+              tbody.append(row);
+            }
+            table.append(thead, tbody);
+            sourceTable.append(table);
+            sources.append(sourceTable);
+          } else {
+            sources.append(node("p", "muted", "No report data-item symbols are available."));
           }
-          body.append(dataItems);
+          body.append(sources);
+          const requestPageFields = object.reportRequestPageControls ?? [];
+          if (requestPageFields.length) {
+            const requestPage = node("section", "report-section");
+            requestPage.append(node("h3", "", "Request page fields"));
+            for (const group of requestPageFields) {
+              const groupPanel = node("div", "page-control-group");
+              groupPanel.append(node("strong", "", group.group));
+              groupPanel.append(node("div", "report-field-list", group.controls.join(", ")));
+              requestPage.append(groupPanel);
+            }
+            body.append(requestPage);
+          }
+          if (properties.length) {
+            const reportOptions = node("section", "report-section");
+            reportOptions.append(node("h3", "", "Report properties"));
+            const optionList = node("div", "property-list");
+            for (const [key, value] of properties) optionList.append(node("span", "badge", key + ": " + value));
+            reportOptions.append(optionList);
+            body.append(reportOptions);
+          }
         }
         if (showFields && object.fields.length) {
           const table = node("table", "field-table");
@@ -1081,7 +1330,7 @@ export function createExplorerHtml(
         for (const [key, value] of properties) propertyList.append(node("span", "badge", key + ": " + value));
         panel.append(propertyList);
       }
-      const fields = member ? object.fields.filter((field) => field.name === member) : object.fields;
+      const fields = member ? object.fields.filter((field) => sameFieldName(field.name, member)) : object.fields;
       if (fields.length) {
         panel.append(node("h3", "", member ? "Selected field" : "Fields"));
         const table = node("table", "field-table");
@@ -1114,7 +1363,7 @@ export function createExplorerHtml(
         symbol: objectsByKey.get(usage.symbolKey),
         object: objectsByKey.get(usage.objectKey)
       })).filter((item) => item.symbol && item.object)
-        .filter(({ usage }) => (!symbolKey || usage.symbolKey === symbolKey) && (!member || usage.member === member))
+        .filter(({ usage }) => (!symbolKey || usage.symbolKey === symbolKey) && (!member || sameFieldName(usage.member, member)))
         .filter(({ usage, symbol, object }) => [symbol.name, symbol.id, usage.member, object.name, object.id, object.packageName, usage.line, usage.excerpt].join(" ").toLowerCase().includes(query))
         .slice(0, 500);
       if (!matches.length) {
@@ -1125,7 +1374,7 @@ export function createExplorerHtml(
       const table = node("table", "field-table usage-table");
       const thead = node("thead");
       const header = node("tr");
-      for (const label of ["Referencing object", "Type / package", "Line", "Reference details", "Source"]) header.append(node("th", "", label));
+      for (const label of ["Referencing object", "Type / package", "Line", "Reference details", "Navigation"]) header.append(node("th", "", label));
       thead.append(header);
       const tbody = node("tbody");
       for (const { usage, symbol, object } of matches) {
@@ -1143,11 +1392,10 @@ export function createExplorerHtml(
         details.append(sourceMeta);
         referenceCell.append(details);
         const actionCell = node("td");
-        for (const tableObject of associatedTableObjects(object)) {
-          actionCell.append(makeButton("Table: " + tableObject.name, "link-button", () => openObjectDetails(tableObject)));
-        }
-        addViewSourceAction(actionCell, object, usage.line);
-        addViewSourceAction(actionCell, symbol, symbol.line);
+        const actions = node("div", "usage-actions");
+        actions.append(createSourceButton("View Call Site", object, usage.line));
+        actions.append(createSourceButton("View Definition", symbol, usage.member ? symbol.fields.find((field) => field.name === usage.member)?.line ?? symbol.line : symbol.line));
+        actionCell.append(actions);
         row.append(objectCell, typeCell, lineCell, referenceCell, actionCell);
         tbody.append(row);
       }
@@ -1179,25 +1427,53 @@ export function createExplorerHtml(
     function renderIntegrationEvents() {
       renderHeading("Event contract catalog", "Integration Events", "Investigate integration-event publishers and their exposed event procedures across the current extension and dependency symbols.");
       const events = analysis.objects.flatMap((object) => object.integrationEvents.map((name) => ({
+        eventKey: object.key + "::" + name,
         object,
         name,
+        detail: object.integrationEventDetails?.find((event) => event.name === name),
         tables: associatedTableObjects(object),
       })))
-        .sort((a, b) => a.name.localeCompare(b.name));
-      const controls = node("div", "toolbar");
-      const filter = makeSearch("Search event, object, table names or IDs…", (query) => drawEvents(host, events, query, objectSelect.value, tableSelect.value));
+        .sort((a, b) => a.object.packageName.localeCompare(b.object.packageName) || a.object.name.localeCompare(b.object.name) || a.name.localeCompare(b.name));
+      const controls = node("div", "event-filters");
+      const search = node("input", "search");
+      search.type = "search";
+      search.placeholder = "Search event, object, table names or IDs…";
+      search.setAttribute("aria-label", search.placeholder);
+      const typeSelect = node("select", "select");
+      typeSelect.setAttribute("aria-label", "Filter by integration event source object type");
+      const allTypes = node("option", "", "All source object types");
+      allTypes.value = "";
+      typeSelect.append(allTypes);
+      const eventTypes = [...new Set(events.map(({ object }) => object.kind))]
+        .sort((left, right) => (typeLabels[left] ?? left).localeCompare(typeLabels[right] ?? right));
+      for (const kind of eventTypes) {
+        const option = node("option", "", typeLabels[kind] ?? titleFor(kind));
+        option.value = kind;
+        typeSelect.append(option);
+      }
       const objectSelect = node("select", "select");
       objectSelect.setAttribute("aria-label", "Filter by containing object");
-      const allObjects = node("option", "", "All containing objects");
-      allObjects.value = "";
-      objectSelect.append(allObjects);
-      const eventObjects = [...new Map(events.map(({ object }) => [object.key, object])).values()]
-        .sort((a, b) => a.name.localeCompare(b.name));
-      for (const object of eventObjects) {
-        const option = node("option", "", object.name + " (ID " + object.id + ")");
-        option.value = object.key;
-        objectSelect.append(option);
-      }
+      const populateObjectOptions = (preserveSelection) => {
+        const previousSelection = preserveSelection ? objectSelect.value : "";
+        const availableObjects = [...new Map(
+          events
+            .filter(({ object }) => !typeSelect.value || object.kind === typeSelect.value)
+            .map(({ object }) => [object.key, object]),
+        ).values()].sort((a, b) => a.name.localeCompare(b.name));
+        objectSelect.replaceChildren();
+        const allObjects = node("option", "", "All containing objects");
+        allObjects.value = "";
+        objectSelect.append(allObjects);
+        for (const object of availableObjects) {
+          const option = node("option", "", object.name + " (ID " + object.id + ")");
+          option.value = object.key;
+          objectSelect.append(option);
+        }
+        objectSelect.value = availableObjects.some((object) => object.key === previousSelection)
+          ? previousSelection
+          : "";
+      };
+      populateObjectOptions(false);
       const tableSelect = node("select", "select");
       tableSelect.setAttribute("aria-label", "Filter by associated table");
       const allTables = node("option", "", "All associated tables");
@@ -1211,35 +1487,109 @@ export function createExplorerHtml(
         tableSelect.append(option);
       }
       const host = node("div");
-      const redraw = () => drawEvents(host, events, filter.querySelector("input").value.trim().toLowerCase(), objectSelect.value, tableSelect.value);
+      const redraw = () => drawEvents(host, events, search.value.trim().toLowerCase(), typeSelect.value, objectSelect.value, tableSelect.value);
+      search.addEventListener("input", redraw);
+      typeSelect.addEventListener("change", () => {
+        populateObjectOptions(true);
+        redraw();
+      });
       objectSelect.addEventListener("change", redraw);
       tableSelect.addEventListener("change", redraw);
-      controls.append(filter, objectSelect, tableSelect);
+      const addEventFilter = (label, control) => {
+        const field = node("label", "event-filter");
+        field.append(node("span", "event-filter-label", label), control);
+        controls.append(field);
+      };
+      addEventFilter("Search events", search);
+      addEventFilter("Source object type", typeSelect);
+      addEventFilter("Source object", objectSelect);
+      addEventFilter("Associated table", tableSelect);
       main.append(controls, host);
-      drawEvents(host, events, "", "", "");
+      drawEvents(host, events, "", "", "", "");
     }
-    function drawEvents(host, events, query, objectKey, tableKey) {
+    function drawEvents(host, events, query, objectType, objectKey, tableKey) {
       host.replaceChildren();
-      const matches = events.filter(({ object, name, tables }) =>
+      const matches = events.filter(({ object, name, detail, tables }) =>
+        (!objectType || object.kind === objectType) &&
         (!objectKey || object.key === objectKey) &&
         (!tableKey || tables.some((table) => table.key === tableKey)) &&
-        [name, object.name, object.id, object.kind, object.packageName, ...tables.flatMap((table) => [table.name, table.id])].join(" ").toLowerCase().includes(query),
+        [
+          name, object.name, object.id, object.kind, object.packageName,
+          ...(detail?.parameters.flatMap((parameter) => [parameter.name, parameter.type]) ?? []),
+          ...(detail?.attributeArguments ?? []),
+          ...tables.flatMap((table) => [table.name, table.id]),
+        ].join(" ").toLowerCase().includes(query),
       );
       if (!matches.length) {
         appendEmpty(host, analysis.objects.length ? "No integration events match this search." : "No AL sources or event symbols were found.");
         return;
       }
       host.append(node("p", "muted", matches.length + " integration event" + (matches.length === 1 ? "" : "s")));
-      for (const { object, name, tables } of matches) {
-        const eventLine = object.integrationEventLines[name] ?? object.line;
+      for (const { eventKey, object, name, detail, tables } of matches) {
+        const eventLine = detail?.line ?? object.integrationEventLines[name] ?? object.line;
         const card = node("section", "panel");
+        card.dataset.eventKey = eventKey;
         const head = node("div", "definition-head");
         const details = node("div");
-        details.append(node("div", "definition-title", name));
-        details.append(node("div", "definition-meta", object.kind + " " + object.id + " · " + object.name + " · " + object.packageName + " · " + object.sourcePath + ":" + eventLine));
+        details.append(node("div", "definition-title", name + " · " + object.name));
+        details.append(node("div", "definition-meta", (typeLabels[object.kind] ?? titleFor(object.kind)) + " " + object.id + " · " + object.packageName + " · " + object.sourcePath + ":" + eventLine));
         head.append(details);
-        addViewSourceAction(head, object, eventLine);
+        head.append(createSourceButton("View Definition", object, eventLine));
         card.append(head);
+        const contract = node("section", "event-contract");
+        contract.append(node("h3", "", "Event contract"));
+        if (detail?.comment) {
+          const documentation = node("div", "event-documentation", detail.comment);
+          contract.append(documentation);
+        }
+        if (detail?.definition) {
+          const definition = node("code", "event-definition", detail.definition);
+          contract.append(definition);
+        }
+        const parameterTable = node("table", "field-table event-parameter-table");
+        const parameterHead = node("thead");
+        const parameterHeader = node("tr");
+        for (const label of ["Parameter", "Type", "Passing"]) parameterHeader.append(node("th", "", label));
+        parameterHead.append(parameterHeader);
+        const parameterBody = node("tbody");
+        if (detail?.parameters.length) {
+          for (const parameter of detail.parameters) {
+            const row = node("tr");
+            row.append(
+              node("td", "", parameter.name),
+              node("td", "", parameter.type),
+              node("td", "", parameter.byReference ? "var (by reference)" : "value"),
+            );
+            parameterBody.append(row);
+          }
+        } else {
+          const row = node("tr");
+          row.append(node("td", "muted", "No parameter signature available in analyzed symbols."));
+          parameterBody.append(row);
+        }
+        parameterTable.append(parameterHead, parameterBody);
+        contract.append(parameterTable);
+        const capabilities = node("div", "property-list");
+        capabilities.append(node("span", "definition-meta", "Publisher capabilities"));
+        if (detail?.attributeArguments.length) {
+          const capabilityNames = ["IncludeSender", "GlobalVarAccess"];
+          detail.attributeArguments.forEach((value, index) => {
+            const capability = capabilityNames[index] ?? ("Attribute argument " + (index + 1));
+            const meaning = index === 0
+              ? value.toLowerCase() === "true" ? "sender is included" : value.toLowerCase() === "false" ? "sender is not included" : "value"
+              : index === 1
+                ? value.toLowerCase() === "true" ? "global variables are accessible" : value.toLowerCase() === "false" ? "global variables are not accessible" : "value"
+                : "declared value";
+            capabilities.append(node("span", "badge", capability + ": " + value + " (" + meaning + ")"));
+          });
+        } else {
+          capabilities.append(node("span", "badge", "Attribute flags unavailable in analyzed symbols"));
+        }
+        contract.append(capabilities);
+        if (!detail && object.sourceType === "package") {
+          contract.append(node("p", "muted", "The dependency package exposes the event name, but its symbol metadata does not include the publisher signature or attribute flags."));
+        }
+        card.append(contract);
         if (tables.length) {
           const tableList = node("div", "property-list");
           tableList.append(node("span", "definition-meta", "Associated tables"));
@@ -1248,8 +1598,43 @@ export function createExplorerHtml(
           }
           card.append(tableList);
         }
-        const consumers = analysis.usages.filter((usage) => usage.symbolKey === object.key && usage.member === name);
-        card.append(node("p", "muted", consumers.length + " matching references found in indexed source."));
+        const references = analysis.usages.filter((usage) => usage.symbolKey === object.key && usage.member === name);
+        const triggerSites = references.filter((usage) => !/\\bEventSubscriber\\s*\\(/i.test(usage.excerpt));
+        const subscribers = references.filter((usage) => /\\bEventSubscriber\\s*\\(/i.test(usage.excerpt));
+        const triggerSection = node("section", "event-contract");
+        triggerSection.append(node("h3", "", "Triggered from"));
+        if (triggerSites.length) {
+          triggerSection.append(node("p", "muted", "Indexed source references that may invoke this event. Confirm each call in source; token matches are not compiler-verified."));
+          for (const usage of triggerSites) {
+            const caller = objectsByKey.get(usage.objectKey);
+            const reference = node("div", "event-reference");
+            const referenceInfo = node("div");
+            referenceInfo.append(
+              node("strong", "", caller?.name ?? usage.objectKey),
+              node("div", "definition-meta", (caller?.sourcePath ?? "") + ":" + usage.line + " · " + (caller?.packageName ?? "Unknown package")),
+              node("code", "event-excerpt", usage.excerpt || "No source excerpt available."),
+            );
+            reference.append(referenceInfo);
+            if (caller) reference.append(createSourceButton("View Call Site", caller, usage.line));
+            triggerSection.append(reference);
+          }
+        } else {
+          triggerSection.append(node("p", "muted", "No indexed trigger call sites were found in available source."));
+        }
+        card.append(triggerSection);
+        if (subscribers.length) {
+          const subscriberSection = node("section", "event-contract");
+          subscriberSection.append(node("h3", "", "Subscribers"));
+          for (const usage of subscribers) {
+            const subscriber = objectsByKey.get(usage.objectKey);
+            const reference = node("div", "event-reference");
+            reference.append(node("div", "", (subscriber?.name ?? usage.objectKey) + " · " + (subscriber?.sourcePath ?? "") + ":" + usage.line));
+            reference.append(node("code", "event-excerpt", usage.excerpt));
+            if (subscriber) reference.append(createSourceButton("View Subscriber", subscriber, usage.line));
+            subscriberSection.append(reference);
+          }
+          card.append(subscriberSection);
+        }
         host.append(card);
       }
     }
@@ -1263,13 +1648,91 @@ export function createExplorerHtml(
       else if (activeView === "pages") renderPages();
       else if (activeView === "reports") renderReports();
       else if (activeView === "integrationEvents") renderIntegrationEvents();
+      else if (activeView === "documentation") renderDocumentation();
       else if (activeView === "objectDetails") renderObjectDetails();
       else renderOverview();
+    }
+    function renderDocumentation() {
+      renderHeading("Learning and project handoff", "Documentation", "Generate a portable reference from the current analysis, including object definitions, relationships, field usage, event references, dependencies, and coverage notes.");
+      const toolbar = node("div", "toolbar");
+      const scopeKind = node("select", "select");
+      scopeKind.setAttribute("aria-label", "Documentation scope type");
+      for (const [value, label] of [["project", "Project"], ["package", "AL Package"]]) {
+        const option = node("option", "", label);
+        option.value = value;
+        scopeKind.append(option);
+      }
+      const scopeName = node("select", "select");
+      scopeName.setAttribute("aria-label", "Select project or AL package");
+      const exportButton = makeButton("Export Markdown", "primary-button", () => {
+        if (scopeName.value) {
+          vscode.postMessage({
+            type: "exportDocumentation",
+            scopeKind: scopeKind.value,
+            scopeName: scopeName.value,
+          });
+        }
+      });
+      const preview = node("pre", "documentation-preview", documentationMarkdown);
+      preview.setAttribute("aria-label", "Generated extension reference preview");
+      const optionsForScope = () => scopeKind.value === "project" ? projectNames : packageNames;
+      const populateScopes = () => {
+        const previousValue = scopeName.value;
+        scopeName.replaceChildren();
+        for (const name of optionsForScope()) {
+          const option = node("option", "", name);
+          option.value = name;
+          scopeName.append(option);
+        }
+        if (optionsForScope().includes(previousValue)) {
+          scopeName.value = previousValue;
+        } else if (
+          initialDocumentationScope &&
+          initialDocumentationScope.kind === scopeKind.value &&
+          optionsForScope().includes(initialDocumentationScope.name)
+        ) {
+          scopeName.value = initialDocumentationScope.name;
+        }
+        exportButton.disabled = !scopeName.value;
+        preview.textContent = scopeName.value ? "Generating documentation preview…" : "No analyzed projects or AL packages are available.";
+        requestPreview();
+      };
+      const requestPreview = () => {
+        if (scopeName.value) {
+          vscode.postMessage({
+            type: "generateDocumentation",
+            scopeKind: scopeKind.value,
+            scopeName: scopeName.value,
+          });
+        }
+      };
+      scopeKind.value = initialDocumentationScope?.kind ?? "project";
+      populateScopes();
+      scopeKind.addEventListener("change", populateScopes);
+      scopeName.addEventListener("change", requestPreview);
+      toolbar.append(scopeKind, scopeName, exportButton);
+      main.append(toolbar);
+      main.append(node("p", "documentation-note", "Event subscriber references and where-used results are inferred from available symbols and source; review the limitations in the exported report before treating them as definitive."));
+      main.append(preview);
     }
     window.addEventListener("message", (event) => {
       const message = event.data;
       if (message && message.type === "progress") {
         setProgress(message.progress);
+        return;
+      }
+      if (message && message.type === "documentationGenerated") {
+        const scopeKind = document.querySelector('[aria-label="Documentation scope type"]');
+        const scopeName = document.querySelector('[aria-label="Select project or AL package"]');
+        if (
+          scopeKind &&
+          scopeName &&
+          message.scopeKind === scopeKind.value &&
+          message.scopeName === scopeName.value
+        ) {
+          const preview = document.querySelector(".documentation-preview");
+          if (preview) preview.textContent = message.markdown;
+        }
         return;
       }
       if (message && message.type === "setView" && viewItems.some(([key]) => key === message.view)) {

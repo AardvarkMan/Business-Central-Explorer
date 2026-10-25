@@ -32,16 +32,28 @@ const source = [
   "    }",
   "}",
   'page 50102 "Acme Customer Card" {',
+  "    Caption = 'Customer Card';",
   '    SourceTable = "Acme Customer";',
   "    layout {",
   '        area(content) { group(General) { field("No."; Rec."No.") { } } group(Communication) { field("Phone"; Rec."Phone No.") { } } }',
   "    }",
   "}",
   'report 50103 "Acme Customer List" {',
-  '    dataset { dataitem(Customer; "Acme Customer") { field(No; Customer."No.") { } } }',
+  "    dataset {",
+  '        dataitem(Customer; "Acme Customer") {',
+  '            RequestFilterFields = "No.", Name;',
+  '            DataItemTableView = sorting("No.") order(Ascending);',
+  "            DataItemTableFilter = Blocked = const(false);",
+  '            field(No; Customer."No.") { }',
+  "        }",
+  "    }",
+  '    requestpage { layout { area(content) { group(Options) { field("Show Details"; ShowDetails) { } } } } }',
   "}",
   "codeunit 50104 AcmePublisher {",
   '    var CustomerRec: Record "Acme Customer";',
+  "    /// <summary>",
+  "    /// Raised when customer data changes.",
+  "    /// </summary>",
   "    [IntegrationEvent(false, false)]",
   "    procedure OnCustomerChanged(CustomerNo: Code[20])",
   "    begin",
@@ -86,14 +98,83 @@ test("parses AL object declarations, fields, properties, and integration events"
   );
   assert.equal(objects[1].properties.Extends, "Acme Customer");
   assert.equal(objects[2].properties.SourceTable, "Acme Customer");
+  assert.equal(objects[2].properties.Caption, "Customer Card");
   assert.deepEqual(objects[2].controls, ["No.", "Phone"]);
   assert.deepEqual(objects[2].controlGroups, [
     { group: "content / General", controls: ["No."] },
     { group: "content / Communication", controls: ["Phone"] },
   ]);
   assert.deepEqual(objects[3].dataItems, ["Customer: Acme Customer"]);
+  assert.deepEqual(objects[3].reportDataItems, [
+    {
+      name: "Customer",
+      sourceTable: "Acme Customer",
+      line: objects[3].line + 2,
+      properties: {
+        RequestFilterFields: '"No.", Name',
+        DataItemTableView: 'sorting("No.") order(Ascending)',
+        DataItemTableFilter: "Blocked = const(false)",
+      },
+    },
+  ]);
+  assert.deepEqual(objects[3].reportRequestPageControls, [
+    { group: "content / Options", controls: ["Show Details"] },
+  ]);
   assert.deepEqual(objects[4].integrationEvents, ["OnCustomerChanged"]);
-  assert.equal(objects[4].integrationEventLines.OnCustomerChanged, 28);
+  assert.equal(objects[4].integrationEventLines.OnCustomerChanged, 41);
+  assert.deepEqual(objects[4].integrationEventDetails, [
+    {
+      name: "OnCustomerChanged",
+      line: 41,
+      definition: "procedure OnCustomerChanged(CustomerNo: Code[20])",
+      comment: "<summary>\nRaised when customer data changes.\n</summary>",
+      parameters: [{ name: "CustomerNo", type: "Code[20]", byReference: false }],
+      attributeArguments: ["false", "false"],
+    },
+  ]);
+});
+
+test("parses local integration-event publishers on tables", () => {
+  const objects = parseAlFile(sourceInput([
+    "table 18 Customer {",
+    "    /// Raised before changing the customer.",
+    "    [IntegrationEvent(false, false)]",
+    "    // Event publisher declaration.",
+    "    local procedure OnBeforeModifyEvent(var Customer: Record Customer; var xCustomer: Record Customer; RunTrigger: Boolean)",
+    "    begin",
+    "    end;",
+    "}",
+  ].join("\n")), manifest);
+
+  assert.deepEqual(objects[0]?.integrationEvents, ["OnBeforeModifyEvent"]);
+  assert.deepEqual(objects[0]?.integrationEventDetails?.[0], {
+    name: "OnBeforeModifyEvent",
+    line: objects[0].line + 4,
+    definition: "local procedure OnBeforeModifyEvent(var Customer: Record Customer; var xCustomer: Record Customer; RunTrigger: Boolean)",
+    comment: "Raised before changing the customer.",
+    parameters: [
+      { name: "Customer", type: "Record Customer", byReference: true },
+      { name: "xCustomer", type: "Record Customer", byReference: true },
+      { name: "RunTrigger", type: "Boolean", byReference: false },
+    ],
+    attributeArguments: ["false", "false"],
+  });
+});
+
+test("uses the table definition caption instead of a nested field caption", () => {
+  const objects = parseAlFile(sourceInput([
+    "table 18 Customer {",
+    "    Caption = 'Customer';",
+    "    fields {",
+    "        field(1; Name; Text[100]) {",
+    "            Caption = 'CFDI Customer Name';",
+    "        }",
+    "    }",
+    "}",
+  ].join("\n")), manifest);
+
+  assert.equal(objects[0]?.name, "Customer");
+  assert.equal(objects[0]?.properties.Caption, "Customer");
 });
 
 test("builds table relationships and where-used references", async () => {
@@ -130,6 +211,200 @@ test("builds table relationships and where-used references", async () => {
       (usage) => usage.symbolKey === publisher?.key && usage.member === "OnCustomerChanged",
     ),
   );
+});
+
+test("resolves Rec and xRec to the current source table, not named record variables", async () => {
+  const analysis = await analyzeFiles([sourceInput([
+    "table 50200 Customer {",
+    "    fields {",
+    '        field(1; "No."; Code[20]) { }',
+    "    }",
+    "}",
+    "table 50201 Vendor {",
+    "    fields {",
+    '        field(1; "No."; Code[20]) { }',
+    "    }",
+    "}",
+    "page 50202 VendorCard {",
+    "    SourceTable = Vendor;",
+    "    var",
+    "        Customer: Record Customer;",
+    "    layout {",
+    '        area(content) { field("No."; Rec."No.") { } }',
+    "    }",
+    "    trigger OnAfterGetRecord()",
+    "    begin",
+    '        if Rec."No." = xRec."No." then;',
+    '        if Customer."No." = Rec."No." then;',
+    "    end;",
+    "}",
+    "report 50203 RecordReferences {",
+    "    dataset {",
+    "        dataitem(Customer; Customer) { }",
+    "        dataitem(Vendor; Vendor) { }",
+    "    }",
+    "    procedure CheckRecord()",
+    "    begin",
+    '        if Rec."No." = Customer."No." then;',
+    '        if Vendor."No." = Customer."No." then;',
+    "    end;",
+    "}",
+  ].join("\n"))], [], [manifest]);
+  const customer = analysis.objects.find((object) => object.name === "Customer");
+  const vendor = analysis.objects.find((object) => object.name === "Vendor");
+  const vendorCard = analysis.objects.find((object) => object.name === "VendorCard");
+  const report = analysis.objects.find((object) => object.name === "RecordReferences");
+  assert.ok(customer && vendor && vendorCard && report);
+
+  const sourceLines = vendorCard.sourceText.split(/\r?\n/);
+  const recAndXRecLine = vendorCard.line + sourceLines.findIndex((line) => line.includes('if Rec."No." = xRec."No."'));
+  const customerVariableLine = vendorCard.line + sourceLines.findIndex((line) => line.includes('if Customer."No." = Rec."No."'));
+  const customerCardUsages = analysis.usages.filter(
+    (usage) => usage.objectKey === vendorCard.key && usage.symbolKey === customer.key && usage.member === "No.",
+  );
+  const vendorCardUsages = analysis.usages.filter(
+    (usage) => usage.objectKey === vendorCard.key && usage.symbolKey === vendor.key && usage.member === "No.",
+  );
+  assert.deepEqual(customerCardUsages.map((usage) => usage.line), [customerVariableLine]);
+  assert.ok(vendorCardUsages.some((usage) => usage.line === recAndXRecLine));
+  assert.ok(vendorCardUsages.some((usage) => usage.line === customerVariableLine));
+
+  const customerUsages = analysis.usages.filter(
+    (usage) => usage.symbolKey === customer.key && usage.member === "No.",
+  );
+  const vendorUsages = analysis.usages.filter(
+    (usage) => usage.symbolKey === vendor.key && usage.member === "No.",
+  );
+  assert.ok(customerUsages.length > 0);
+  assert.ok(customerUsages.every((usage) => [report.key, vendorCard.key].includes(usage.objectKey)));
+  assert.ok(vendorUsages.some((usage) => usage.objectKey === vendorCard.key));
+  assert.ok(vendorUsages.some((usage) => usage.objectKey === report.key));
+  assert.equal(customerUsages.some((usage) => usage.objectKey === vendorCard.key && usage.line === recAndXRecLine), false);
+});
+
+test("keeps full field names distinct in where-used references", async () => {
+  const analysis = await analyzeFiles([sourceInput([
+    "table 50210 Customer {",
+    "    fields {",
+    '        field(1; "No."; Code[20]) { }',
+    '        field(2; "Primary Contact No."; Code[20]) { }',
+    "    }",
+    "}",
+    "codeunit 50211 CustomerReferences {",
+    "    var",
+    "        Customer: Record Customer;",
+    "    procedure FindReferences()",
+    "    begin",
+    '        // Customer."No." is mentioned here but is not a call site.',
+    '        Customer."No.";',
+    '        Customer."Primary Contact No.";',
+    "    end;",
+    "}",
+  ].join("\n"))], [], [manifest]);
+  const customer = analysis.objects.find((object) => object.name === "Customer");
+  const caller = analysis.objects.find((object) => object.name === "CustomerReferences");
+  assert.ok(customer && caller);
+
+  const fieldUsages = analysis.usages.filter(
+    (usage) => usage.objectKey === caller.key && usage.symbolKey === customer.key,
+  );
+  const noUsages = fieldUsages.filter((usage) => usage.member === "No.");
+  const primaryContactUsages = fieldUsages.filter((usage) => usage.member === "Primary Contact No.");
+  assert.deepEqual(noUsages.map((usage) => usage.excerpt), ['Customer."No.";']);
+  assert.deepEqual(primaryContactUsages.map((usage) => usage.excerpt), ['Customer."Primary Contact No.";']);
+  const sourceLines = caller.sourceText.split(/\r?\n/);
+  assert.deepEqual(
+    noUsages.map((usage) => usage.line),
+    [caller.line + sourceLines.findIndex((line) => line.trim() === 'Customer."No.";')],
+  );
+  assert.deepEqual(
+    primaryContactUsages.map((usage) => usage.line),
+    [caller.line + sourceLines.findIndex((line) => line.trim() === 'Customer."Primary Contact No.";')],
+  );
+});
+
+test("indexes same-object integration-event trigger call sites", async () => {
+  const input = sourceInput([
+    "codeunit 50110 Event Publisher {",
+    "    [IntegrationEvent(false, false)]",
+    "    procedure OnBeforePost(DocumentNo: Code[20]; var IsHandled: Boolean)",
+    "    begin",
+    "    end;",
+    "",
+    "    procedure PreparePosting(DocumentNo: Code[20])",
+    "    begin",
+    "        OnBeforePost(DocumentNo, IsHandled);",
+    "    end;",
+    "}",
+  ].join("\n"));
+  const analysis = await analyzeFiles([input], [], [manifest]);
+  const publisher = analysis.objects[0];
+
+  assert.deepEqual(publisher.integrationEventDetails?.[0].parameters, [
+    { name: "DocumentNo", type: "Code[20]", byReference: false },
+    { name: "IsHandled", type: "Boolean", byReference: true },
+  ]);
+  assert.ok(
+    analysis.usages.some(
+      (usage) =>
+        usage.symbolKey === publisher.key &&
+        usage.objectKey === publisher.key &&
+        usage.member === "OnBeforePost" &&
+        usage.excerpt.includes("OnBeforePost(DocumentNo, IsHandled)"),
+    ),
+  );
+});
+
+test("keeps same-name integration events isolated by publisher object", async () => {
+  const analysis = await analyzeFiles([sourceInput([
+    "codeunit 50120 PublisherA {",
+    "    [IntegrationEvent(false, false)]",
+    "    procedure OnShared(Value: Integer)",
+    "    begin",
+    "    end;",
+    "    procedure TriggerA()",
+    "    begin",
+    "        OnShared(1);",
+    "    end;",
+    "}",
+    "codeunit 50121 PublisherB {",
+    "    [IntegrationEvent(false, false)]",
+    "    procedure OnShared(Value: Integer)",
+    "    begin",
+    "    end;",
+    "    procedure TriggerB()",
+    "    begin",
+    "        OnShared(2);",
+    "    end;",
+    "}",
+    "codeunit 50122 SubscriberA {",
+    "    [EventSubscriber(ObjectType::Codeunit, Codeunit::PublisherA, 'OnShared', '', false, false)]",
+    "    local procedure HandleA(Value: Integer)",
+    "    begin",
+    "    end;",
+    "}",
+    "codeunit 50123 SubscriberB {",
+    "    [EventSubscriber(ObjectType::Codeunit, Codeunit::PublisherB, 'OnShared', '', false, false)]",
+    "    local procedure HandleB(Value: Integer)",
+    "    begin",
+    "    end;",
+    "}",
+  ].join("\n"))], [], [manifest]);
+  const publisherA = analysis.objects.find((object) => object.name === "PublisherA");
+  const publisherB = analysis.objects.find((object) => object.name === "PublisherB");
+  assert.ok(publisherA);
+  assert.ok(publisherB);
+
+  const referencesA = analysis.usages
+    .filter((usage) => usage.symbolKey === publisherA.key && usage.member === "OnShared")
+    .map((usage) => analysis.objects.find((object) => object.key === usage.objectKey)?.name)
+    .sort();
+  const referencesB = analysis.usages
+    .filter((usage) => usage.symbolKey === publisherB.key && usage.member === "OnShared")
+    .map((usage) => analysis.objects.find((object) => object.key === usage.objectKey)?.name)
+    .sort();
+  assert.deepEqual(referencesA, ["PublisherA", "SubscriberA"]);
+  assert.deepEqual(referencesB, ["PublisherB", "SubscriberB"]);
 });
 
 test("maps TableRelation targets and marks conditional relations", async () => {
