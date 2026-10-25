@@ -1,7 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import JSZip from "jszip";
-import { parseAlFile } from "./alParser";
+import { maskComments, parseAlFile } from "./alParser";
 import {
   Analysis,
   AnalysisPhase,
@@ -909,39 +909,68 @@ async function buildUsages(
     if (reference.properties.SourceTable) {
       defaultTables.add(normalizeName(reference.properties.SourceTable));
     }
-    if (reference.properties.Extends) {
+    if (reference.kind === "tableextension" && reference.properties.Extends) {
       defaultTables.add(normalizeName(reference.properties.Extends));
+    }
+    if (reference.kind === "pageextension" && reference.properties.Extends) {
+      for (const page of objects) {
+        if (
+          page.kind === "page" &&
+          normalizeName(page.name) === normalizeName(reference.properties.Extends) &&
+          page.properties.SourceTable
+        ) {
+          defaultTables.add(normalizeName(page.properties.SourceTable));
+        }
+      }
     }
     for (const match of reference.sourceText.matchAll(
       /\bdataitem\s*\(\s*([^;]+);\s*("(?:[^"]|"")*"|[\w]+)/gi,
     )) {
       const itemName = normalizeName(match[1]);
       const tableName = normalizeName(match[2]);
-      defaultTables.add(tableName);
       recordVariables.set(
         itemName,
         new Set([...(recordVariables.get(itemName) ?? []), tableName]),
       );
     }
 
-    for (const match of reference.sourceText.matchAll(tokenPattern)) {
+    const searchableSource = maskComments(reference.sourceText);
+    let localLine = 1;
+    let lineStart = 0;
+    let nextNewline = searchableSource.indexOf("\n");
+    for (const match of searchableSource.matchAll(tokenPattern)) {
       const targets = symbolsByName.get(normalizeName(match[0]));
       if (!targets) {
         continue;
       }
       const offset = match.index ?? 0;
-      const localLine = reference.sourceText.slice(0, offset).split("\n").length;
-      const prefix = reference.sourceText.slice(
-        reference.sourceText.lastIndexOf("\n", offset) + 1,
-        offset,
-      );
+      while (nextNewline >= 0 && nextNewline < offset) {
+        localLine++;
+        lineStart = nextNewline + 1;
+        nextNewline = searchableSource.indexOf("\n", lineStart);
+      }
+      const prefix = reference.sourceText.slice(lineStart, offset);
       const qualifier = prefix.match(/\b([A-Za-z_][\w]*)\.\s*$/)?.[1];
-      const contextTables = qualifier
-        ? recordVariables.get(qualifier.toLowerCase()) ??
-          (qualifier.toLowerCase() === "rec" ? defaultTables : new Set<string>())
-        : defaultTables;
+      const normalizedQualifier = qualifier?.toLowerCase();
+      const contextTables = normalizedQualifier === "rec" || normalizedQualifier === "xrec"
+        ? defaultTables
+        : qualifier
+          ? recordVariables.get(normalizedQualifier ?? "") ?? new Set<string>()
+          : defaultTables;
       for (const target of targets) {
-        if (target.object.key === reference.key) {
+        if (
+          target.memberType === "field" &&
+          !fieldNamesEqual(target.member, match[0])
+        ) {
+          continue;
+        }
+        if (
+          target.memberType === "event" &&
+          !matchesIntegrationEventReference(reference, offset, target.object, target.member ?? "")
+        ) {
+          continue;
+        }
+        if (target.object.key === reference.key && target.memberType !== "event") {
           continue;
         }
         if (
@@ -983,6 +1012,62 @@ async function buildUsages(
   return [...usages.values()];
 }
 
+function matchesIntegrationEventReference(
+  reference: ObjectInfo,
+  offset: number,
+  publisher: ObjectInfo,
+  eventName: string,
+): boolean {
+  const lineStart = reference.sourceText.lastIndexOf("\n", offset) + 1;
+  const lineEndIndex = reference.sourceText.indexOf("\n", offset);
+  const line = reference.sourceText.slice(lineStart, lineEndIndex < 0 ? undefined : lineEndIndex);
+  if (reference.key === publisher.key) {
+    return (
+      new RegExp(`\\b${escapeRegExp(eventName)}\\s*\\(`, "i").test(line) &&
+      !/\bprocedure\s+/i.test(line) &&
+      !/\bIntegrationEvent\b/i.test(line)
+    );
+  }
+  const subscriberPattern = /\bEventSubscriber\s*\(([^)]*)\)/gi;
+  for (const subscriber of reference.sourceText.matchAll(subscriberPattern)) {
+    const start = subscriber.index ?? 0;
+    const end = start + subscriber[0].length;
+    if (offset < start || offset >= end) continue;
+    const argumentsList = splitEventArguments(subscriber[1]);
+    const subscriberEventName = argumentsList[2]?.trim().replace(/^['"]|['"]$/g, "");
+    const publisherReference = argumentsList[1] ?? "";
+    return (
+      normalizeName(subscriberEventName ?? "") === normalizeName(eventName) &&
+      normalizeName(publisherReference).includes(normalizeName(publisher.name))
+    );
+  }
+  return false;
+}
+
+function splitEventArguments(value: string): string[] {
+  const result: string[] = [];
+  let start = 0;
+  let quote: '"' | "'" | undefined;
+  for (let index = 0; index < value.length; index++) {
+    const char = value[index];
+    if (quote) {
+      if (char === quote && value[index + 1] === quote) index++;
+      else if (char === quote) quote = undefined;
+    } else if (char === '"' || char === "'") {
+      quote = char;
+    } else if (char === ",") {
+      result.push(value.slice(start, index));
+      start = index + 1;
+    }
+  }
+  result.push(value.slice(start));
+  return result;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function yieldToEventLoop(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
@@ -1008,6 +1093,10 @@ function normalizeName(value: string): string {
     return trimmed.slice(1, -1).replace(/""/g, '"').replace(/''/g, "'").toLowerCase();
   }
   return trimmed.toLowerCase();
+}
+
+function fieldNamesEqual(left: string | undefined, right: string): boolean {
+  return left !== undefined && normalizeName(left) === normalizeName(right);
 }
 
 function stringValue(value: unknown): string | undefined {

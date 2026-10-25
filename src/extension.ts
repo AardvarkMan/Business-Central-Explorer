@@ -14,16 +14,17 @@ import {
   SourceInput,
 } from "./model";
 import { createExplorerHtml, ExplorerProgress, ExplorerView } from "./webview";
+import { createDocumentationMarkdown, DocumentationScope } from "./documentation";
 
 const viewCommands: Array<{ id: string; label: string; view: ExplorerView; icon: string }> = [
   { id: "overview", label: "Overview", view: "overview", icon: "home" },
   { id: "relationships", label: "Relationships", view: "relationships", icon: "references" },
   { id: "galaxy", label: "Galaxy View", view: "galaxy", icon: "symbol-misc" },
   { id: "tables", label: "Tables", view: "tables", icon: "table" },
-  { id: "whereUsed", label: "Where Used", view: "whereUsed", icon: "search" },
   { id: "pages", label: "Pages", view: "pages", icon: "browser" },
   { id: "reports", label: "Reports", view: "reports", icon: "graph" },
   { id: "integrationEvents", label: "Integration Events", view: "integrationEvents", icon: "zap" },
+  { id: "documentation", label: "Documentation", view: "documentation", icon: "book" },
 ];
 
 class ExplorerTreeProvider implements vscode.TreeDataProvider<ExplorerTreeItem> {
@@ -64,6 +65,7 @@ let analysis: Analysis | undefined;
 let currentPanel: vscode.WebviewPanel | undefined;
 let currentView: ExplorerView = "overview";
 let extensionUri: vscode.Uri;
+let extensionVersion = "unknown";
 let refreshTimeout: ReturnType<typeof setTimeout> | undefined;
 let refreshInProgress: Promise<void> | undefined;
 let refreshAgain = false;
@@ -85,6 +87,7 @@ class EmbeddedSourceProvider implements vscode.TextDocumentContentProvider {
 
 export function activate(context: vscode.ExtensionContext): void {
   extensionUri = context.extensionUri;
+  extensionVersion = context.extension.packageJSON.version ?? extensionVersion;
   treeProvider = new ExplorerTreeProvider(() => analysis);
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider("businessCentralExplorer.explorer", treeProvider),
@@ -198,7 +201,15 @@ async function openExplorer(view: ExplorerView): Promise<void> {
         return;
       }
       if (isOpenSourceDocumentMessage(message)) {
-        const fileName = path.posix.basename(message.fileName.replace(/\\/g, "/"));
+        const sourceObject = analysis?.objects.find((object) => object.key === message.objectKey);
+        if (!sourceObject?.sourceText) {
+          void vscode.window.showWarningMessage(
+            "The requested dependency AL source is not available in the current analysis.",
+          );
+          return;
+        }
+        const archiveEntry = sourceObject.sourcePath.split("!/").pop() ?? "";
+        const fileName = path.posix.basename(archiveEntry.replace(/\\/g, "/")) || `${sourceObject.name}.al`;
         const extension = path.extname(fileName).toLowerCase();
         const safeExtension = extension === ".dal" ? ".dal" : ".al";
         const safeName = extension === ".al" || extension === ".dal"
@@ -208,7 +219,7 @@ async function openExplorer(view: ExplorerView): Promise<void> {
           scheme: "business-central-explorer-source",
           path: `/${++sourceDocumentSequence}/${safeName}`,
         });
-        embeddedSourceDocuments.set(uri.toString(), message.sourceText);
+        embeddedSourceDocuments.set(uri.toString(), sourceObject.sourceText);
         try {
           const document = await vscode.workspace.openTextDocument(uri);
           await vscode.languages.setTextDocumentLanguage(document, "al");
@@ -225,6 +236,47 @@ async function openExplorer(view: ExplorerView): Promise<void> {
           void vscode.window.showWarningMessage(
             `Could not open the embedded AL source: ${errorMessage(error)}`,
           );
+        }
+        return;
+      }
+      if (isDocumentationRequestMessage(message, analysis)) {
+        const scope: DocumentationScope = {
+          kind: message.scopeKind,
+          name: message.scopeName,
+        };
+        const markdown = createDocumentationMarkdown(analysis!, new Date().toISOString(), scope);
+        if (message.type === "generateDocumentation") {
+          void currentPanel?.webview.postMessage({
+            type: "documentationGenerated",
+            scopeKind: scope.kind,
+            scopeName: scope.name,
+            markdown,
+          });
+          return;
+        }
+        const safeName = scope.name.replace(/[<>:"/\\|?*]/g, "-");
+        const defaultUri = vscode.workspace.workspaceFolders?.[0]
+          ? vscode.Uri.joinPath(
+              vscode.workspace.workspaceFolders[0].uri,
+              `${safeName}-REFERENCE.md`,
+            )
+          : undefined;
+        const destination = await vscode.window.showSaveDialog({
+          defaultUri,
+          filters: { "Markdown files": ["md"] },
+          saveLabel: "Export Reference",
+        });
+        if (destination) {
+          try {
+            await fs.writeFile(destination.fsPath, markdown, "utf8");
+            void vscode.window.showInformationMessage(
+              `Business Central reference exported to ${destination.fsPath}.`,
+            );
+          } catch (error) {
+            void vscode.window.showErrorMessage(
+              `Could not export the Business Central reference: ${errorMessage(error)}`,
+            );
+          }
         }
         return;
       }
@@ -263,8 +315,6 @@ async function openExplorer(view: ExplorerView): Promise<void> {
   }
   if (!analysis && !refreshInProgress) {
     void refreshAnalysis();
-  } else if (refreshInProgress) {
-    postProgress();
   }
 }
 
@@ -295,9 +345,11 @@ async function refreshAnalysis(): Promise<void> {
         void vscode.window.showErrorMessage(message);
       }
     } while (refreshAgain);
-  })().finally(() => {
+  })().finally(async () => {
     refreshInProgress = undefined;
     explorerProgress = undefined;
+    postProgress();
+    await new Promise<void>((resolve) => setImmediate(resolve));
     updatePanel();
   });
   return refreshInProgress;
@@ -451,6 +503,11 @@ async function doRefreshAnalysis(): Promise<void> {
     };
     void vscode.window.showErrorMessage(`Business Central Explorer analysis failed: ${errorMessage(error)}`);
   }
+  setProgress({
+    message: "Finalizing analysis and preparing the explorer…",
+    phase: "finalizing",
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
   treeProvider.refresh();
 }
 
@@ -466,19 +523,14 @@ function scheduleRefresh(): void {
 
 function updatePanel(): void {
   if (currentPanel) {
-    setPanelHtml(
-      analysis ?? emptyAnalysis(),
-      explorerProgress ?? {
-        message: "Preparing workspace analysis…",
-      },
-    );
+    setPanelHtml(analysis ?? emptyAnalysis(), explorerProgress);
   }
 }
 
 function setPanelHtml(snapshot: Analysis, progress?: ExplorerProgress): void {
   if (currentPanel) {
     const logo = currentPanel.webview.asWebviewUri(
-      vscode.Uri.joinPath(extensionUri, "resources", "aardvarklabs-logo.jpg"),
+      vscode.Uri.joinPath(extensionUri, "resources", "aardvark-labs-logo.jpg"),
     );
     currentPanel.webview.html = createExplorerHtml(
       currentPanel.webview.cspSource,
@@ -486,6 +538,7 @@ function setPanelHtml(snapshot: Analysis, progress?: ExplorerProgress): void {
       snapshot,
       currentView,
       progress,
+      extensionVersion,
     );
   }
 }
@@ -534,6 +587,8 @@ function viewCount(snapshot: Analysis, view: ExplorerView): number {
       return snapshot.objects.filter((item) => item.kind === "report" || item.kind === "reportextension").length;
     case "integrationEvents":
       return snapshot.objects.reduce((sum, item) => sum + item.integrationEvents.length, 0);
+    case "documentation":
+      return snapshot.objects.length;
   }
 }
 
@@ -581,17 +636,44 @@ function isOpenLocationMessage(
 
 function isOpenSourceDocumentMessage(
   value: unknown,
-): value is { type: "openSourceDocument"; fileName: string; sourceText: string; line: number } {
+): value is { type: "openSourceDocument"; objectKey: string; line: number } {
   if (!value || typeof value !== "object") {
     return false;
   }
   const message = value as Record<string, unknown>;
   return (
     message.type === "openSourceDocument" &&
-    typeof message.fileName === "string" &&
-    typeof message.sourceText === "string" &&
+    typeof message.objectKey === "string" &&
     typeof message.line === "number" &&
     Number.isFinite(message.line)
+  );
+}
+
+function isDocumentationRequestMessage(
+  value: unknown,
+  snapshot: Analysis | undefined,
+): value is {
+  type: "exportDocumentation" | "generateDocumentation";
+  scopeKind: "project" | "package";
+  scopeName: string;
+} {
+  if (!snapshot || !value || typeof value !== "object") {
+    return false;
+  }
+  const message = value as Record<string, unknown>;
+  if (
+    (message.type !== "exportDocumentation" && message.type !== "generateDocumentation") ||
+    (message.scopeKind !== "project" && message.scopeKind !== "package") ||
+    typeof message.scopeName !== "string"
+  ) {
+    return false;
+  }
+  return snapshot.objects.some((object) =>
+    object.packageName === message.scopeName &&
+    object.sourceType === (message.scopeKind === "project" ? "workspace" : "package"),
+  ) || (
+    message.scopeKind === "package" &&
+    snapshot.packages.some((pkg) => pkg.name === message.scopeName)
   );
 }
 

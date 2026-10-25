@@ -2,8 +2,9 @@
   "name": "business-central-explorer",
   "displayName": "Business Central Explorer",
   "description": "Explore Business Central AL dependencies, objects, and integration events.",
-  "version": "0.2.5",
+  "version": "0.2.17",
   "publisher": "aardvarklabs",
+  "icon": "resources/extension-list-icon.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/AardvarkMan/Business-Central-Explorer"

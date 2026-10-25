@@ -2,6 +2,7 @@ import {
   FieldInfo,
   ObjectInfo,
   ObjectKind,
+  PageControlGroup,
   PackageMetadata,
   SourceInput,
 } from "./model";
@@ -71,11 +72,18 @@ export function parseAlFile(input: SourceInput, metadata: PackageMetadata): Obje
       controls: [...new Set(controlGroups.flatMap((group) => group.controls))],
       controlGroups,
       dataItems: readDataItems(sourceText),
+      ...(kind === "report" || kind === "reportextension"
+        ? {
+            reportDataItems: readReportDataItems(sourceText, line),
+            reportRequestPageControls: readReportRequestPageControls(sourceText),
+          }
+        : {}),
       procedures,
       integrationEvents: eventLocations.map((event) => event.name),
       integrationEventLines: Object.fromEntries(
         eventLocations.map((event) => [event.name, event.line]),
       ),
+      integrationEventDetails: eventLocations,
       properties,
       sourceText,
     });
@@ -87,9 +95,9 @@ export function parseAlFile(input: SourceInput, metadata: PackageMetadata): Obje
 function readProperties(sourceText: string): Record<string, string> {
   const properties: Record<string, string> = {};
   const propertyPattern =
-    /\b(SourceTable|TableType|Access|Caption|UsageCategory|ProcessingOnly|DefaultLayout|DataAccessIntent|InsertAllowed|ModifyAllowed|DeleteAllowed|Editable|ApplicationArea)\s*=\s*([^;\r\n]+)\s*;/gi;
+    /\b(SourceTable|TableType|Access|Caption|UsageCategory|ProcessingOnly|DefaultLayout|DefaultRenderingLayout|DataAccessIntent|InsertAllowed|ModifyAllowed|DeleteAllowed|Editable|ApplicationArea|UseRequestPage|AllowScheduling|ExcelLayout|RDLCLayout|WordLayout)\s*=\s*([^;\r\n]+)\s*;/gi;
 
-  for (const match of sourceText.matchAll(propertyPattern)) {
+  for (const match of topLevelObjectText(sourceText).matchAll(propertyPattern)) {
     properties[match[1]] = unquote(match[2].trim());
   }
 
@@ -101,6 +109,36 @@ function readProperties(sourceText: string): Record<string, string> {
   }
 
   return properties;
+}
+
+function topLevelObjectText(sourceText: string): string {
+  const characters = maskComments(sourceText).split("");
+  let depth = 0;
+  let quote: '"' | "'" | undefined;
+
+  for (let index = 0; index < sourceText.length; index++) {
+    const char = sourceText[index];
+    if (quote) {
+      if (char === quote && sourceText[index + 1] === quote) {
+        index++;
+      } else if (char === quote) {
+        quote = undefined;
+      }
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+    } else if (char === "{") {
+      if (depth >= 1) characters[index] = " ";
+      depth++;
+    } else if (char === "}") {
+      depth--;
+      if (depth >= 1) characters[index] = " ";
+    } else if (depth > 1 && char !== "\n" && char !== "\r") {
+      characters[index] = " ";
+    }
+  }
+  return characters.join("");
 }
 
 function readFields(sourceText: string): FieldInfo[] {
@@ -139,17 +177,129 @@ function readProcedureNames(sourceText: string): string[] {
 function readIntegrationEvents(
   sourceText: string,
   objectLine: number,
-): Array<{ name: string; line: number }> {
-  const events: Array<{ name: string; line: number }> = [];
+): NonNullable<ObjectInfo["integrationEventDetails"]> {
+  const events: NonNullable<ObjectInfo["integrationEventDetails"]> = [];
   const pattern =
-    /\[\s*IntegrationEvent(?:\s*\([^)]*\))?\s*\]\s*procedure\s+("(?:[^"]|"")*"|[\w]+)/gi;
-  for (const match of sourceText.matchAll(pattern)) {
+    /\[\s*IntegrationEvent(?:\s*\(([^)]*)\))?\s*\]\s*(?:(?:local|internal|protected)\s+)?procedure\s+("(?:[^"]|"")*"|[\w]+)/gi;
+  const code = maskComments(sourceText);
+  for (const match of code.matchAll(pattern)) {
+    const procedureKeyword = /(?:(?:local|internal|protected)\s+)?procedure\b/i.exec(match[0]);
+    const procedureStart = (match.index ?? 0) + (procedureKeyword?.index ?? 0);
+    const signatureStart = (match.index ?? 0) + match[0].length;
+    const signatureOpen = /^\s*\(/.exec(sourceText.slice(signatureStart));
+    const openParen = signatureOpen
+      ? signatureStart + signatureOpen[0].lastIndexOf("(")
+      : -1;
+    const signatureEnd = openParen >= 0 ? findMatchingParenthesis(sourceText, openParen) : -1;
+    const signature = signatureEnd >= 0 ? sourceText.slice(openParen + 1, signatureEnd) : "";
+    const procedureEnd = signatureEnd >= 0
+      ? signatureEnd + 1
+      : signatureStart + match[0].length - match[0].lastIndexOf("procedure");
     events.push({
-      name: unquote(match[1]),
-      line: objectLine + countLines(sourceText, match.index ?? 0) - 1,
+      name: unquote(match[2]),
+      line: objectLine + countLines(sourceText, procedureStart) - 1,
+      definition: sourceText.slice(procedureStart, procedureEnd).replace(/\s+/g, " ").trim(),
+      comment: readPrecedingComments(sourceText, match.index ?? 0),
+      parameters: splitAlArguments(signature).flatMap((parameter) => {
+        const parsed = parameter.trim().match(/^(var\s+)?("(?:[^"]|"")*"|[\w]+)\s*:\s*([\s\S]+)$/i);
+        return parsed
+          ? [{
+              name: unquote(parsed[2]),
+              type: parsed[3].trim(),
+              byReference: !!parsed[1],
+            }]
+          : [];
+      }),
+      attributeArguments: match[1]
+        ? splitAlArguments(match[1]).map((argument) => unquote(argument.trim()))
+        : [],
     });
   }
   return events;
+}
+
+function readPrecedingComments(sourceText: string, offset: number): string {
+  const precedingLines = sourceText.slice(0, offset).split(/\r?\n/);
+  while (precedingLines.length && !precedingLines[precedingLines.length - 1].trim()) precedingLines.pop();
+  const comments: string[] = [];
+  let inBlockComment = false;
+  while (precedingLines.length) {
+    const line = precedingLines[precedingLines.length - 1].trim();
+    if (!line && comments.length) {
+      precedingLines.pop();
+      continue;
+    }
+    if (inBlockComment) {
+      if (line.startsWith("/*")) {
+        precedingLines.pop();
+        inBlockComment = false;
+        continue;
+      }
+      comments.unshift(line.replace(/^\*\s?/, "").trim());
+      precedingLines.pop();
+      continue;
+    }
+    if (line.endsWith("*/")) {
+      const openingIndex = line.lastIndexOf("/*");
+      comments.unshift(
+        line.slice(openingIndex < 0 ? 0 : openingIndex + 2, -2).replace(/^\*\s?/, "").trim(),
+      );
+      precedingLines.pop();
+      inBlockComment = openingIndex < 0;
+      continue;
+    }
+    if (/^\/\/\/?/.test(line)) {
+      comments.unshift(line.replace(/^\/\/\/?/, "").trim());
+      precedingLines.pop();
+      continue;
+    }
+    break;
+  }
+  return comments.join("\n").trim();
+}
+
+function findMatchingParenthesis(text: string, openIndex: number): number {
+  let depth = 0;
+  let quote: '"' | "'" | undefined;
+  for (let index = openIndex; index < text.length; index++) {
+    const char = text[index];
+    if (quote) {
+      if (char === quote && text[index + 1] === quote) index++;
+      else if (char === quote) quote = undefined;
+    } else if (char === '"' || char === "'") {
+      quote = char;
+    } else if (char === "(") {
+      depth++;
+    } else if (char === ")" && --depth === 0) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function splitAlArguments(value: string): string[] {
+  const argumentsList: string[] = [];
+  let start = 0;
+  let depth = 0;
+  let quote: '"' | "'" | undefined;
+  for (let index = 0; index < value.length; index++) {
+    const char = value[index];
+    if (quote) {
+      if (char === quote && value[index + 1] === quote) index++;
+      else if (char === quote) quote = undefined;
+    } else if (char === '"' || char === "'") {
+      quote = char;
+    } else if (char === "(" || char === "[" || char === "{") {
+      depth++;
+    } else if (char === ")" || char === "]" || char === "}") {
+      depth--;
+    } else if ((char === "," || char === ";") && depth === 0) {
+      argumentsList.push(value.slice(start, index));
+      start = index + 1;
+    }
+  }
+  if (value.slice(start).trim()) argumentsList.push(value.slice(start));
+  return argumentsList;
 }
 
 function readPageControlGroups(sourceText: string): Array<{ group: string; controls: string[] }> {
@@ -191,6 +341,41 @@ function readDataItems(sourceText: string): string[] {
     }
   }
   return items;
+}
+
+function readReportDataItems(
+  sourceText: string,
+  objectLine: number,
+): NonNullable<ObjectInfo["reportDataItems"]> {
+  const items: NonNullable<ObjectInfo["reportDataItems"]> = [];
+  const pattern = /\bdataitem\s*\(\s*([^;]+);\s*("(?:[^"]|"")*"|[\w]+)/gi;
+  for (const match of sourceText.matchAll(pattern)) {
+    const offset = match.index ?? 0;
+    const bodyStart = findNextCodeBrace(sourceText, offset + match[0].length);
+    const bodyEnd = bodyStart >= 0 ? findMatchingBrace(sourceText, bodyStart) : -1;
+    const body = bodyEnd >= 0 ? sourceText.slice(bodyStart + 1, bodyEnd) : "";
+    const properties: Record<string, string> = {};
+    const propertyPattern =
+      /\b(DataItemTableView|DataItemLink|DataItemLinkReference|DataItemTableFilter|RequestFilterFields|RequestFilterHeading|PrintOnlyIfDetail|MaxIteration)\s*=\s*([^;\r\n]+)\s*;/gi;
+    for (const property of body.matchAll(propertyPattern)) {
+      properties[property[1]] = unquote(property[2].trim());
+    }
+    items.push({
+      name: unquote(match[1].trim()),
+      sourceTable: unquote(match[2]),
+      line: objectLine + countLines(sourceText, offset) - 1,
+      properties,
+    });
+  }
+  return items;
+}
+
+function readReportRequestPageControls(sourceText: string): PageControlGroup[] {
+  const requestPage = findNamedBlock(sourceText, "requestpage");
+  if (!requestPage) return [];
+  const layout = findNamedBlock(requestPage.text, "layout");
+  if (!layout) return [];
+  return readPageControlGroups(`layout {${layout.text}}`);
 }
 
 function findNamedBlock(
@@ -319,12 +504,16 @@ function countLines(text: string, offset: number): number {
 
 function unquote(value: string): string {
   const trimmed = value.trim();
-  return trimmed.startsWith('"') && trimmed.endsWith('"')
-    ? trimmed.slice(1, -1).replace(/""/g, '"')
-    : trimmed;
+  if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+    return trimmed.slice(1, -1).replace(/""/g, '"');
+  }
+  if (trimmed.startsWith("'") && trimmed.endsWith("'")) {
+    return trimmed.slice(1, -1).replace(/''/g, "'");
+  }
+  return trimmed;
 }
 
-function maskComments(text: string): string {
+export function maskComments(text: string): string {
   const characters = text.split("");
   let quote: '"' | "'" | undefined;
   let lineComment = false;
